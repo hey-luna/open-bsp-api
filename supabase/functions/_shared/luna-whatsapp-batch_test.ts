@@ -1,6 +1,8 @@
 import { assertEquals } from "jsr:@std/assert@1";
 import {
+  batchPartKindFromMime,
   FORWARDED_DEBOUNCE_SECONDS,
+  lunaBatchPartFileKind,
   lunaWhatsAppBatchDebounceSecondsForMessage,
   planSiblingOpenBatchUpdates,
   resolveAbsorbMessageIds,
@@ -261,4 +263,39 @@ Deno.test("open-batch plan: no-op when no overlap", () => {
     ),
     [],
   );
+});
+
+Deno.test("batchPartKindFromMime: documents stay documents (not image)", () => {
+  assertEquals(batchPartKindFromMime("application/pdf"), "document");
+  assertEquals(
+    batchPartKindFromMime(
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ),
+    "document",
+  );
+  assertEquals(batchPartKindFromMime("text/csv"), "document");
+  assertEquals(batchPartKindFromMime("text/plain"), "document");
+  assertEquals(batchPartKindFromMime("text/csv; charset=utf-8"), "document");
+});
+
+Deno.test("batchPartKindFromMime: image and audio unchanged", () => {
+  assertEquals(batchPartKindFromMime("image/jpeg"), "image");
+  assertEquals(batchPartKindFromMime("audio/ogg"), "audio");
+});
+
+Deno.test("batchPartKindFromMime: video and unknown are not batch file parts", () => {
+  assertEquals(batchPartKindFromMime("video/mp4"), null);
+  assertEquals(batchPartKindFromMime("model/gltf-binary"), null);
+});
+
+Deno.test("lunaBatchPartFileKind: prefers stored content.kind document", () => {
+  // Even with a weird/missing MIME, inbound WhatsApp documents map to document.
+  assertEquals(lunaBatchPartFileKind("document", "text/csv"), "document");
+  assertEquals(
+    lunaBatchPartFileKind("document", "application/octet-stream"),
+    "document",
+  );
+  assertEquals(lunaBatchPartFileKind("document", ""), "document");
+  assertEquals(lunaBatchPartFileKind("image", "image/png"), "image");
+  assertEquals(lunaBatchPartFileKind("audio", "audio/mpeg"), "audio");
 });

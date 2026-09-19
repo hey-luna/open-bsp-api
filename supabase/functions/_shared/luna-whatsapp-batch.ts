@@ -176,12 +176,25 @@ function lunaKindFromFileMime(
   return "other";
 }
 
-function batchPartKindFromMime(
+/** Map a MIME type to a Luna batchParts file kind (not video/other). */
+export function batchPartKindFromMime(
   mimeType: string,
 ): "image" | "audio" | "document" | null {
   const kind = lunaKindFromFileMime(mimeType);
   if (kind === "audio" || kind === "image" || kind === "document") return kind;
   return null;
+}
+
+/**
+ * Resolve Luna batchParts file kind. Prefer OpenBSP's stored inbound
+ * `content.kind === "document"` so text/csv etc. are not dropped by MIME alone.
+ */
+export function lunaBatchPartFileKind(
+  contentKind: string,
+  mimeType: string,
+): "image" | "audio" | "document" | null {
+  if (contentKind === "document") return "document";
+  return batchPartKindFromMime(mimeType);
 }
 
 async function fileToBase64(
@@ -482,11 +495,7 @@ async function messageToBatchPart(
     return null;
   }
 
-  // Prefer stored inbound kind: WhatsApp documents (incl. text/csv) stay
-  // kind "document" with the original mimeType, not remapped to image/dropped.
-  const partKind = content.kind === "document"
-    ? "document" as const
-    : batchPartKindFromMime(content.file.mime_type);
+  const partKind = lunaBatchPartFileKind(content.kind, content.file.mime_type);
   if (!partKind) return null;
 
   const base64Data = await fileToBase64(client, content.file.uri);
