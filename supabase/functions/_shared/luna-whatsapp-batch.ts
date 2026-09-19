@@ -62,7 +62,7 @@ export type LunaRecentMessage = {
 
 export type LunaBatchPart = {
   id: string;
-  kind: "text" | "image" | "audio" | "button" | "contacts";
+  kind: "text" | "image" | "audio" | "document" | "button" | "contacts";
   text?: string;
   /** Reply-button / list / template-button id when `kind` is `button`. */
   buttonId?: string;
@@ -167,17 +167,20 @@ function lunaKindFromFileMime(
   const mime = mimeType.toLowerCase().split(";")[0]?.trim() ?? "";
   if (mime.startsWith("audio/")) return "audio";
   if (mime.startsWith("image/")) return "image";
-  if (mime === "application/pdf" || mime.startsWith("application/")) {
+  if (mime.startsWith("video/")) return "video";
+  // Documents: PDF/Office/etc, CSV and other text attachments WhatsApp sends
+  // as documents (text/csv, text/plain, …).
+  if (mime.startsWith("application/") || mime.startsWith("text/")) {
     return "document";
   }
-  if (mime.startsWith("video/")) return "video";
   return "other";
 }
 
-function batchPartKindFromMime(mimeType: string): "image" | "audio" | null {
+function batchPartKindFromMime(
+  mimeType: string,
+): "image" | "audio" | "document" | null {
   const kind = lunaKindFromFileMime(mimeType);
-  if (kind === "audio") return "audio";
-  if (kind === "image" || kind === "document") return "image";
+  if (kind === "audio" || kind === "image" || kind === "document") return kind;
   return null;
 }
 
@@ -406,7 +409,11 @@ async function messageToLunaRecent(
 
   if (content.type === "file" && SUPPORTED_FILE_KINDS.has(content.kind)) {
     const mimeType = content.file.mime_type;
-    const kind = lunaKindFromFileMime(mimeType);
+    // Prefer OpenBSP's stored file kind (e.g. WhatsApp document) over MIME guess.
+    const kind = content.kind === "audio" || content.kind === "image" ||
+        content.kind === "document" || content.kind === "video"
+      ? content.kind
+      : lunaKindFromFileMime(mimeType);
     let base64Data: string | null = null;
     if (opts.includeMedia) {
       base64Data = await fileToBase64(client, content.file.uri);
@@ -475,7 +482,11 @@ async function messageToBatchPart(
     return null;
   }
 
-  const partKind = batchPartKindFromMime(content.file.mime_type);
+  // Prefer stored inbound kind: WhatsApp documents (incl. text/csv) stay
+  // kind "document" with the original mimeType, not remapped to image/dropped.
+  const partKind = content.kind === "document"
+    ? "document" as const
+    : batchPartKindFromMime(content.file.mime_type);
   if (!partKind) return null;
 
   const base64Data = await fileToBase64(client, content.file.uri);
