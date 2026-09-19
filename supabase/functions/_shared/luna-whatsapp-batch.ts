@@ -34,7 +34,14 @@ export type LunaContact = {
 };
 
 export type LunaRecentMessage = {
+  /** WhatsApp message id (WAMID), when known. */
   id?: string;
+  /**
+   * OpenBSP `messages.id` (same value returned from POST /rest/v1/messages).
+   * Lets consumers join an outbound send to the later batch echo without
+   * matching on body text.
+   */
+  openbspId: string;
   direction: "incoming" | "outgoing";
   timestamp: string;
   kind:
@@ -370,6 +377,7 @@ async function messageToLunaRecent(
   const content = row.content as IncomingMessage | OutgoingMessage;
   const base = {
     ...(row.external_id ? { id: row.external_id } : {}),
+    openbspId: row.id,
     direction: row.direction === "outgoing"
       ? "outgoing" as const
       : "incoming" as const,
