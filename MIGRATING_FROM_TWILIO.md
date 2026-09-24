@@ -163,6 +163,30 @@ explicit. Valid values:
 - `document` — PDFs, Office files, etc.
 - `sticker` — `image/webp`
 
+### Send a WhatsApp voice message (PTT)
+
+Set `"voice": true` on the file content (alongside `kind: "audio"`). Meta
+renders this as an in-chat voice note rather than a generic audio attachment.
+Use **OGG with Opus** (`audio/ogg` or `audio/ogg; codecs=opus`) for best
+compatibility.
+
+```json
+"content": {
+  "version": "1",
+  "type": "file",
+  "kind": "audio",
+  "voice": true,
+  "file": {
+    "mime_type": "audio/ogg",
+    "uri": "https://example.com/note.ogg",
+    "name": "note.ogg",
+    "size": 8192
+  }
+}
+```
+
+Inbound voice notes from customers are stored with `"voice": true` as well.
+
 ## Send a template message
 
 ### Twilio

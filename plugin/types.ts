@@ -25,6 +25,8 @@ export type FilePart = {
     name?: string;
     size: number;
   };
+  /** WhatsApp only: voice message (PTT bubble). Requires kind `audio`. */
+  voice?: boolean;
   text?: string; // caption
   artifacts?: Part[];
 };

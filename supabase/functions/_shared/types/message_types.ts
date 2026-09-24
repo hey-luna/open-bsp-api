@@ -136,6 +136,8 @@ export type FilePart = {
     name?: string;
     size: number;
   };
+  /** WhatsApp only: send/receive as a voice message (PTT bubble), not a generic audio file. */
+  voice?: boolean;
   text?: string; // caption
   artifacts?: Part[];
 };

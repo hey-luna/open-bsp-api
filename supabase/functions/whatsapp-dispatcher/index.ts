@@ -267,7 +267,7 @@ function outgoingMessageToEndpointMessage({
       return {
         ...baseMessage,
         type: "audio",
-        audio: mediaRef,
+        audio: content.voice ? { ...mediaRef, voice: true } : mediaRef,
       };
     }
     case "image": {

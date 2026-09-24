@@ -329,6 +329,7 @@ function webhookMessageToIncomingMessage(
         ...baseMessage,
         type: "file",
         kind: "audio",
+        ...(message.audio.voice ? { voice: true } : {}),
         file: {
           mime_type: message.audio.mime_type,
           uri: message.audio.id, // Will be replaced with internal URI after download

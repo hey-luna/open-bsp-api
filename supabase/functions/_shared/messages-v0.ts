@@ -81,6 +81,7 @@ type FilePart = {
     name?: string;
     size: number;
   };
+  voice?: boolean;
   text?: string; // caption
   artifacts?: Part[];
 };
@@ -633,6 +634,9 @@ export function toV1(row: MessageRowV0): MessageRow | undefined {
           name: row.content.media.filename,
           uri: row.content.media.id,
         },
+        ...(row.content.type === "audio" && row.content.media.voice
+          ? { voice: true }
+          : {}),
         text: row.content.type === "audio" ? "" : row.content.content,
         artifacts: row.content.artifacts,
       },
@@ -801,6 +805,9 @@ export function fromV1(row: MessageRow): MessageRowV0 | undefined {
           filename: row.content.file.name,
           id: row.content.file.uri,
           description,
+          ...(row.content.kind === "audio" && row.content.voice
+            ? { voice: true }
+            : {}),
           ...(row.content.kind === "audio"
             ? {}
             : { annotation: transcription }),
