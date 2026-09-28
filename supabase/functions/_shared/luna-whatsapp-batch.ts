@@ -63,12 +63,24 @@ export type LunaRecentMessage = {
   fileName?: string;
   /** WhatsApp message id (WAMID) this message replies to, when present. */
   replyToId?: string;
+  /**
+   * OpenBSP `messages.id` of the message referenced by `replyToId`, when we
+   * can resolve that WAMID in-thread. Luna keys outbound sends by OpenBSP id
+   * (WAMID is attached asynchronously), so cancel/quote joins need this.
+   */
+  replyToOpenbspId?: string;
   /** True when the WhatsApp message was forwarded. */
   forwarded?: boolean;
 };
 
 export type LunaBatchPart = {
+  /** WhatsApp message id (WAMID) for this inbound part. */
   id: string;
+  /**
+   * OpenBSP `messages.id` for this part (same value as on `recentMessages`).
+   * Stable key for the inbound row; WAMID is Meta’s id on `id`.
+   */
+  openbspId: string;
   kind: "text" | "image" | "audio" | "document" | "button" | "contacts";
   text?: string;
   /** Reply-button / list / template-button id when `kind` is `button`. */
@@ -80,6 +92,12 @@ export type LunaBatchPart = {
   fileName?: string;
   /** WhatsApp message id (WAMID) this part replies to, when present. */
   replyToId?: string;
+  /**
+   * OpenBSP `messages.id` of the message referenced by `replyToId`, when we
+   * can resolve that WAMID in-thread. Luna keys outbound sends by OpenBSP id
+   * (WAMID is attached asynchronously), so cancel/quote joins need this.
+   */
+  replyToOpenbspId?: string;
   /** True when the WhatsApp message was forwarded. */
   forwarded?: boolean;
 };
@@ -228,6 +246,29 @@ function replyToIdFromContent(
   return content.re_message_id || undefined;
 }
 
+/** Map WhatsApp external_id (WAMID) → OpenBSP `messages.id` for reply joins. */
+export function openbspIdByExternalIdFromRows(
+  rows: Iterable<MessageRow>,
+): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const row of rows) {
+    if (row.external_id) map.set(row.external_id, row.id);
+  }
+  return map;
+}
+
+/**
+ * OpenBSP id for `replyToId` when that WAMID is in `openbspIdByExternalId`.
+ * Pure helper for tests and batch/recent context enrichment.
+ */
+export function replyToOpenbspIdFromMap(
+  replyToId: string | undefined,
+  openbspIdByExternalId: Map<string, string>,
+): string | undefined {
+  if (!replyToId) return undefined;
+  return openbspIdByExternalId.get(replyToId);
+}
+
 function lunaButtonTapFromContent(
   content: IncomingMessage,
 ): { buttonId: string; text: string } | null {
@@ -355,13 +396,21 @@ export function lunaContactsText(contacts: LunaContact[]): string {
   return [`[אנשי קשר]`, ...lines].join("\n");
 }
 
-function lunaContextFields(content: IncomingMessage | OutgoingMessage): {
+function lunaContextFields(
+  content: IncomingMessage | OutgoingMessage,
+  openbspIdByExternalId?: Map<string, string>,
+): {
   replyToId?: string;
+  replyToOpenbspId?: string;
   forwarded?: boolean;
 } {
   const replyToId = replyToIdFromContent(content);
+  const replyToOpenbspId = openbspIdByExternalId
+    ? replyToOpenbspIdFromMap(replyToId, openbspIdByExternalId)
+    : undefined;
   return {
     ...(replyToId && { replyToId }),
+    ...(replyToOpenbspId && { replyToOpenbspId }),
     ...(content.forwarded && { forwarded: true as const }),
   };
 }
@@ -379,7 +428,10 @@ function collectReplyToIds(rows: MessageRow[]): Set<string> {
 async function messageToLunaRecent(
   client: SupabaseClient<Database>,
   message: MessageRow,
-  opts: { includeMedia: boolean },
+  opts: {
+    includeMedia: boolean;
+    openbspIdByExternalId?: Map<string, string>;
+  },
 ): Promise<LunaRecentMessage | null> {
   const row = normalizeMessageRow(message);
   const content = row.content as IncomingMessage | OutgoingMessage;
@@ -390,7 +442,7 @@ async function messageToLunaRecent(
       ? "outgoing" as const
       : "incoming" as const,
     timestamp: row.timestamp,
-    ...lunaContextFields(content),
+    ...lunaContextFields(content, opts.openbspIdByExternalId),
   };
 
   if (content.type === "data" && content.kind === "flow-reply") {
@@ -467,6 +519,7 @@ async function messageToLunaRecent(
 async function messageToBatchPart(
   client: SupabaseClient<Database>,
   message: MessageRow,
+  openbspIdByExternalId?: Map<string, string>,
 ): Promise<LunaBatchPart | LunaBatchPart[] | null> {
   const row = normalizeMessageRow(message);
   const content = row.content as IncomingMessage;
@@ -477,21 +530,23 @@ async function messageToBatchPart(
     });
     return null;
   }
-  const id = row.external_id;
-  const contextFields = lunaContextFields(content);
+  const base = {
+    id: row.external_id,
+    openbspId: row.id,
+    ...lunaContextFields(content, openbspIdByExternalId),
+  };
 
   if (content.type === "text" && content.text?.trim()) {
-    return { id, kind: "text", text: content.text.trim(), ...contextFields };
+    return { ...base, kind: "text", text: content.text.trim() };
   }
 
   const tap = lunaButtonTapFromContent(content);
   if (tap) {
     return {
-      id,
+      ...base,
       kind: "button",
       text: tap.text,
       buttonId: tap.buttonId,
-      ...contextFields,
     };
   }
 
@@ -499,11 +554,10 @@ async function messageToBatchPart(
     const contacts = lunaContactsFromContentData(content.data);
     if (contacts.length === 0) return null;
     return {
-      id,
+      ...base,
       kind: "contacts",
       contacts,
       text: lunaContactsText(contacts),
-      ...contextFields,
     };
   }
 
@@ -518,13 +572,12 @@ async function messageToBatchPart(
   if (!base64Data) return null;
 
   return {
-    id,
+    ...base,
     kind: partKind,
     mimeType: content.file.mime_type,
     base64Data,
     fileName: content.file.name,
     text: content.text?.trim() || undefined,
-    ...contextFields,
   };
 }
 
@@ -638,6 +691,13 @@ export async function buildLunaWhatsAppBatchPayload(
     a.timestamp < b.timestamp ? -1 : a.timestamp > b.timestamp ? 1 : 0
   );
 
+  // WAMID → OpenBSP id for replyToOpenbspId on batchParts / recentMessages.
+  // Includes batch rows and any reply targets we pulled into recentRows.
+  const openbspIdByExternalId = openbspIdByExternalIdFromRows([
+    ...(batchMessages ?? []),
+    ...recentRows,
+  ]);
+
   // Include media bytes for quoted messages (in-window or fetched), so Luna can
   // resolve image/audio/doc quotes even when policy is batch_only.
   const includeMediaInRecent = policy.includeMedia === "all_in_window";
@@ -646,13 +706,18 @@ export async function buildLunaWhatsAppBatchPayload(
       messageToLunaRecent(client, message, {
         includeMedia: includeMediaInRecent ||
           Boolean(message.external_id && repliedToIds.has(message.external_id)),
+        openbspIdByExternalId,
       })
     ),
   )).filter((row): row is LunaRecentMessage => row !== null);
 
   const batchParts: LunaBatchPart[] = [];
   for (const message of batchMessages ?? []) {
-    const part = await messageToBatchPart(client, message);
+    const part = await messageToBatchPart(
+      client,
+      message,
+      openbspIdByExternalId,
+    );
     if (!part) continue;
     if (Array.isArray(part)) batchParts.push(...part);
     else batchParts.push(part);

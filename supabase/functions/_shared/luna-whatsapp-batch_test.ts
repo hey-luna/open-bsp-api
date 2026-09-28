@@ -4,7 +4,9 @@ import {
   FORWARDED_DEBOUNCE_SECONDS,
   lunaBatchPartFileKind,
   lunaWhatsAppBatchDebounceSecondsForMessage,
+  openbspIdByExternalIdFromRows,
   planSiblingOpenBatchUpdates,
+  replyToOpenbspIdFromMap,
   resolveAbsorbMessageIds,
   SIBLING_CREATED_WITHIN_MS,
   SIBLING_TIMESTAMP_WINDOW_MS,
@@ -299,3 +301,42 @@ Deno.test("lunaBatchPartFileKind: prefers stored content.kind document", () => {
   assertEquals(lunaBatchPartFileKind("image", "image/png"), "image");
   assertEquals(lunaBatchPartFileKind("audio", "audio/mpeg"), "audio");
 });
+
+Deno.test("openbspIdByExternalIdFromRows: maps WAMID to OpenBSP id", () => {
+  const announceId = "11111111-1111-1111-1111-111111111111";
+  const tapId = "22222222-2222-2222-2222-222222222222";
+  const map = openbspIdByExternalIdFromRows([
+    {
+      ...incomingText({ id: announceId }),
+      direction: "outgoing",
+      external_id: "wamid.announce",
+    } as unknown as MessageRow,
+    {
+      ...incomingButton(),
+      id: tapId,
+      external_id: "wamid.tap",
+    } as unknown as MessageRow,
+    // Rows without external_id are skipped (send not yet attached).
+    {
+      ...incomingText({ id: "33333333-3333-3333-3333-333333333333" }),
+      external_id: null,
+    } as unknown as MessageRow,
+  ]);
+  assertEquals(map.get("wamid.announce"), announceId);
+  assertEquals(map.get("wamid.tap"), tapId);
+  assertEquals(map.size, 2);
+});
+
+Deno.test(
+  "replyToOpenbspIdFromMap: joins reply WAMID to OpenBSP send id",
+  () => {
+    const announceOpenbspId = "11111111-1111-1111-1111-111111111111";
+    const map = new Map([["wamid.announce", announceOpenbspId]]);
+    assertEquals(
+      replyToOpenbspIdFromMap("wamid.announce", map),
+      announceOpenbspId,
+    );
+    assertEquals(replyToOpenbspIdFromMap("wamid.unknown", map), undefined);
+    assertEquals(replyToOpenbspIdFromMap(undefined, map), undefined);
+  },
+);
