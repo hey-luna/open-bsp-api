@@ -74,7 +74,13 @@ export type LunaRecentMessage = {
 };
 
 export type LunaBatchPart = {
+  /** WhatsApp message id (WAMID) for this inbound part. */
   id: string;
+  /**
+   * OpenBSP `messages.id` for this part (same value as on `recentMessages`).
+   * Stable key for the inbound row; WAMID is Meta’s id on `id`.
+   */
+  openbspId: string;
   kind: "text" | "image" | "audio" | "document" | "button" | "contacts";
   text?: string;
   /** Reply-button / list / template-button id when `kind` is `button`. */
@@ -524,21 +530,23 @@ async function messageToBatchPart(
     });
     return null;
   }
-  const id = row.external_id;
-  const contextFields = lunaContextFields(content, openbspIdByExternalId);
+  const base = {
+    id: row.external_id,
+    openbspId: row.id,
+    ...lunaContextFields(content, openbspIdByExternalId),
+  };
 
   if (content.type === "text" && content.text?.trim()) {
-    return { id, kind: "text", text: content.text.trim(), ...contextFields };
+    return { ...base, kind: "text", text: content.text.trim() };
   }
 
   const tap = lunaButtonTapFromContent(content);
   if (tap) {
     return {
-      id,
+      ...base,
       kind: "button",
       text: tap.text,
       buttonId: tap.buttonId,
-      ...contextFields,
     };
   }
 
@@ -546,11 +554,10 @@ async function messageToBatchPart(
     const contacts = lunaContactsFromContentData(content.data);
     if (contacts.length === 0) return null;
     return {
-      id,
+      ...base,
       kind: "contacts",
       contacts,
       text: lunaContactsText(contacts),
-      ...contextFields,
     };
   }
 
@@ -565,13 +572,12 @@ async function messageToBatchPart(
   if (!base64Data) return null;
 
   return {
-    id,
+    ...base,
     kind: partKind,
     mimeType: content.file.mime_type,
     base64Data,
     fileName: content.file.name,
     text: content.text?.trim() || undefined,
-    ...contextFields,
   };
 }
 
