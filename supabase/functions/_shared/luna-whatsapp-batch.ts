@@ -131,7 +131,258 @@ export const SIBLING_CREATED_WITHIN_MS = 30_000;
 /** Look back this far for `sent`/`flushing` batches when skipping delivered ids. */
 export const RECENTLY_SENT_LOOKBACK_MS = 60_000;
 const MAX_FLUSH_ATTEMPTS = 5;
+const STALE_FLUSHING_MS = 5 * 60 * 1000;
 const SUPPORTED_FILE_KINDS = new Set(["audio", "image", "document", "video"]);
+
+/** Luna marks inbound messages read/typing when it starts handling a batch. */
+function messageLikelyDeliveredToLuna(
+  status: MessageRow["status"],
+): boolean {
+  if (!status || typeof status !== "object" || Array.isArray(status)) {
+    return false;
+  }
+  const record = status as Record<string, unknown>;
+  return record.read != null || record.typing != null;
+}
+
+async function findOpenBatchForContact(
+  client: SupabaseClient<Database>,
+  batch: Pick<
+    LunaWhatsAppBatchRow,
+    "organization_id" | "contact_address" | "service"
+  >,
+): Promise<LunaWhatsAppBatchRow | null> {
+  const { data } = await client
+    .from("luna_whatsapp_batches")
+    .select()
+    .eq("organization_id", batch.organization_id)
+    .eq("contact_address", batch.contact_address)
+    .eq("service", batch.service)
+    .eq("status", "open")
+    .maybeSingle();
+  return data;
+}
+
+async function sortMessageIdsByTimestamp(
+  client: SupabaseClient<Database>,
+  messageIds: string[],
+): Promise<string[]> {
+  if (messageIds.length <= 1) return messageIds;
+
+  const { data: messages } = await client
+    .from("messages")
+    .select("id, timestamp")
+    .in("id", messageIds)
+    .throwOnError();
+
+  const byTs = new Map<string, string>(
+    (messages ?? []).map((row: { id: string; timestamp: string }) => [
+      row.id,
+      row.timestamp,
+    ]),
+  );
+  return [...messageIds].sort((a, b) => {
+    const ta = byTs.get(a) ?? "";
+    const tb = byTs.get(b) ?? "";
+    if (ta !== tb) return ta < tb ? -1 : 1;
+    return a < b ? -1 : a > b ? 1 : 0;
+  });
+}
+
+/**
+ * Message ids from a stale/failed flushing batch that still need Luna.
+ * Skips ids Luna already handled (read/typing) so we never re-deliver.
+ * If the batch itself has a luna_response, treat all ids as already delivered.
+ */
+async function undeliveredMessageIdsFromBatch(
+  client: SupabaseClient<Database>,
+  batch: LunaWhatsAppBatchRow,
+): Promise<string[]> {
+  if (batch.luna_response != null) return [];
+  if (batch.message_ids.length === 0) return [];
+
+  const { data: messages } = await client
+    .from("messages")
+    .select("id, status, timestamp")
+    .in("id", batch.message_ids)
+    .throwOnError();
+
+  type StatusRow = {
+    id: string;
+    status: MessageRow["status"];
+    timestamp: string;
+  };
+  const rows = (messages ?? []) as StatusRow[];
+  const found = new Set(rows.map((row) => row.id));
+  const undelivered = rows
+    .filter((row) => !messageLikelyDeliveredToLuna(row.status))
+    .sort((a, b) =>
+      a.timestamp < b.timestamp ? -1 : a.timestamp > b.timestamp ? 1 : 0
+    )
+    .map((row) => row.id);
+
+  // Preserve ids that vanished from messages — safer to retry than drop.
+  for (const id of batch.message_ids) {
+    if (!found.has(id)) undelivered.push(id);
+  }
+  return undelivered;
+}
+
+/**
+ * Merge undelivered ids into an existing open batch (timestamp order), then
+ * close `flushingBatch` as sent. Never reopens flushing when open already
+ * exists — that unique-index conflict was bricking the minute flush cron.
+ */
+async function mergeFlushingIntoOpenBatch(
+  client: SupabaseClient<Database>,
+  flushingBatch: LunaWhatsAppBatchRow,
+  openBatch: LunaWhatsAppBatchRow,
+): Promise<void> {
+  const undelivered = await undeliveredMessageIdsFromBatch(
+    client,
+    flushingBatch,
+  );
+  const openIds = new Set(openBatch.message_ids);
+  const toMerge = undelivered.filter((id) => !openIds.has(id));
+
+  if (toMerge.length > 0) {
+    const mergedIds = await sortMessageIdsByTimestamp(client, [
+      ...toMerge,
+      ...openBatch.message_ids,
+    ]);
+    await client
+      .from("luna_whatsapp_batches")
+      .update({
+        message_ids: mergedIds,
+        // Become due immediately so this same sweep can flush them.
+        flush_at: new Date().toISOString(),
+      })
+      .eq("id", openBatch.id)
+      .eq("status", "open")
+      .throwOnError();
+  }
+
+  await client
+    .from("luna_whatsapp_batches")
+    .update({
+      status: "sent",
+      luna_response: {
+        skipped: true,
+        reason: toMerge.length > 0
+          ? "merged_into_open_batch"
+          : "abandoned_stale_flushing_open_exists",
+        openBatchId: openBatch.id,
+        mergedMessageIds: toMerge,
+      },
+      error_message: null,
+    })
+    .eq("id", flushingBatch.id)
+    .eq("status", "flushing")
+    .throwOnError();
+
+  log.info("Reclaimed stale flushing Luna WhatsApp batch into open", {
+    flushingBatchId: flushingBatch.id,
+    openBatchId: openBatch.id,
+    mergedCount: toMerge.length,
+  });
+}
+
+/**
+ * After a failed flush (or stale reclaim with no sibling open), return the
+ * batch to `open` — or merge into an existing open batch if one appeared
+ * while we were flushing (unique index on one open per contact).
+ */
+async function releaseFlushingBatchToOpenOrMerge(
+  client: SupabaseClient<Database>,
+  batch: LunaWhatsAppBatchRow,
+  patch: {
+    attempt_count: number;
+    error_message: string | null;
+    flush_at: string;
+    idempotency_key?: string | null;
+    luna_response?: LunaWhatsAppBatchRow["luna_response"];
+  },
+): Promise<void> {
+  const openBatch = await findOpenBatchForContact(client, batch);
+  if (openBatch) {
+    await mergeFlushingIntoOpenBatch(client, batch, openBatch);
+    return;
+  }
+
+  const { error } = await client
+    .from("luna_whatsapp_batches")
+    .update({
+      status: "open",
+      attempt_count: patch.attempt_count,
+      error_message: patch.error_message,
+      flush_at: patch.flush_at,
+      ...(patch.idempotency_key !== undefined && {
+        idempotency_key: patch.idempotency_key,
+      }),
+      ...(patch.luna_response !== undefined && {
+        luna_response: patch.luna_response,
+      }),
+    })
+    .eq("id", batch.id)
+    .eq("status", "flushing");
+
+  if (!error) return;
+
+  // Race: an open batch appeared between our check and update.
+  const racedOpen = await findOpenBatchForContact(client, batch);
+  if (racedOpen) {
+    await mergeFlushingIntoOpenBatch(client, batch, racedOpen);
+    return;
+  }
+
+  throw error;
+}
+
+/**
+ * Stale `flushing` rows must not be bulk-updated to `open` — if the contact
+ * already has an open batch, that unique violation aborts the whole cron
+ * sweep and leaves every overdue batch stuck.
+ */
+async function reclaimStaleFlushingBatches(
+  client: SupabaseClient<Database>,
+  limit = 50,
+): Promise<void> {
+  const staleBefore = new Date(Date.now() - STALE_FLUSHING_MS).toISOString();
+  const { data: stale } = await client
+    .from("luna_whatsapp_batches")
+    .select()
+    .eq("status", "flushing")
+    .lt("updated_at", staleBefore)
+    .order("updated_at", { ascending: true })
+    .limit(limit);
+
+  for (const batch of stale ?? []) {
+    const openBatch = await findOpenBatchForContact(client, batch);
+    if (openBatch) {
+      await mergeFlushingIntoOpenBatch(client, batch, openBatch);
+      continue;
+    }
+
+    const { error } = await client
+      .from("luna_whatsapp_batches")
+      .update({ status: "open" })
+      .eq("id", batch.id)
+      .eq("status", "flushing");
+
+    if (!error) continue;
+
+    const racedOpen = await findOpenBatchForContact(client, batch);
+    if (racedOpen) {
+      await mergeFlushingIntoOpenBatch(client, batch, racedOpen);
+      continue;
+    }
+
+    log.error("Failed to reclaim stale flushing Luna WhatsApp batch", {
+      batchId: batch.id,
+      error: error.message,
+    });
+  }
+}
 
 /**
  * Debounce before flushing a Luna batch for this message.
@@ -1171,21 +1422,33 @@ export async function flushLunaWhatsAppBatch(
       ? String((result.body as { error: unknown }).error)
       : `Luna returned HTTP ${result.status}`;
 
-    await client
-      .from("luna_whatsapp_batches")
-      .update({
-        status: result.status === 404 ? "failed" : "open",
+    if (result.status === 404) {
+      await client
+        .from("luna_whatsapp_batches")
+        .update({
+          status: "failed",
+          attempt_count: claimed.attempt_count + 1,
+          idempotency_key: payload.idempotencyKey,
+          luna_response: result
+            .body as Database["public"]["Tables"]["luna_whatsapp_batches"][
+              "Row"
+            ]["luna_response"],
+          error_message: errorMessage,
+        })
+        .eq("id", batchId)
+        .throwOnError();
+    } else {
+      await releaseFlushingBatchToOpenOrMerge(client, claimed, {
         attempt_count: claimed.attempt_count + 1,
         idempotency_key: payload.idempotencyKey,
         luna_response: result
-          .body as Database["public"]["Tables"]["luna_whatsapp_batches"]["Row"][
-            "luna_response"
-          ],
+          .body as Database["public"]["Tables"]["luna_whatsapp_batches"][
+            "Row"
+          ]["luna_response"],
         error_message: errorMessage,
         flush_at: new Date(Date.now() + 30_000).toISOString(),
-      })
-      .eq("id", batchId)
-      .throwOnError();
+      });
+    }
 
     log.warn("Luna WhatsApp batch flush failed", {
       batchId,
@@ -1195,16 +1458,11 @@ export async function flushLunaWhatsAppBatch(
     return "skipped";
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    await client
-      .from("luna_whatsapp_batches")
-      .update({
-        status: "open",
-        attempt_count: claimed.attempt_count + 1,
-        error_message: message,
-        flush_at: new Date(Date.now() + 30_000).toISOString(),
-      })
-      .eq("id", batchId)
-      .throwOnError();
+    await releaseFlushingBatchToOpenOrMerge(client, claimed, {
+      attempt_count: claimed.attempt_count + 1,
+      error_message: message,
+      flush_at: new Date(Date.now() + 30_000).toISOString(),
+    });
     log.error("Luna WhatsApp batch flush error", { batchId, error: message });
     return "skipped";
   }
@@ -1242,12 +1500,7 @@ export async function flushDueLunaWhatsAppBatches(
   client: SupabaseClient<Database>,
   limit = 20,
 ): Promise<number> {
-  await client
-    .from("luna_whatsapp_batches")
-    .update({ status: "open" })
-    .eq("status", "flushing")
-    .lt("updated_at", new Date(Date.now() - 5 * 60 * 1000).toISOString())
-    .throwOnError();
+  await reclaimStaleFlushingBatches(client);
 
   const { data: due } = await client
     .from("luna_whatsapp_batches")
