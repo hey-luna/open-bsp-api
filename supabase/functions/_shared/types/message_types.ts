@@ -184,9 +184,9 @@ export type FlowMessageData = {
 type FlowPart = DataPart<"flow", FlowMessageData>;
 
 /**
- * Session buttons: quick replies and/or website links.
- * Website-only with one URL still maps to WhatsApp `cta_url`. Mixed or
- * two-URL messages use `interactive.type: "button"` (CTA first, then replies).
+ * Session buttons: 1–3 replies, or a single website link (`cta_url`).
+ * Mixed reply + website, two URLs, or 4–10 replies are sent on the same
+ * Cloud API `/messages` call with Direct Send (`category: "utility"`).
  */
 export type ReplyButton =
   | {
