@@ -12,7 +12,10 @@ Deno.test("buildOutgoingButtonsMessage: reply buttons unchanged", () => {
   assertEquals(payload.interactive.type, "button");
   if (payload.interactive.type !== "button") return;
   assertEquals(payload.interactive.action.buttons.length, 2);
-  assertEquals(payload.interactive.action.buttons[0].reply.id, "yes");
+  const first = payload.interactive.action.buttons[0];
+  assertEquals(first.type, "reply");
+  if (first.type !== "reply") return;
+  assertEquals(first.reply.id, "yes");
 });
 
 Deno.test("buildOutgoingButtonsMessage: website button maps to cta_url", () => {
@@ -37,32 +40,74 @@ Deno.test("buildOutgoingButtonsMessage: website button maps to cta_url", () => {
   );
 });
 
-Deno.test("buildOutgoingButtonsMessage: rejects mixed button types", () => {
-  assertThrows(
-    () =>
-      buildOutgoingButtonsMessage({
-        body: "Mixed",
-        buttons: [
-          { id: "a", title: "Reply" },
-          { type: "website", title: "Site", url: "https://example.com" },
-        ],
-      }),
-    Error,
-    "cannot mix reply and website",
+Deno.test("buildOutgoingButtonsMessage: mixes website then reply buttons", () => {
+  const payload = buildOutgoingButtonsMessage({
+    body: "Mixed",
+    buttons: [
+      { id: "a", title: "Reply" },
+      { type: "website", title: "Site", url: "https://example.com" },
+    ],
+  });
+  assertEquals(payload.interactive.type, "button");
+  if (payload.interactive.type !== "button") return;
+  const buttons = payload.interactive.action.buttons;
+  assertEquals(buttons.map((button) => button.type), ["url", "reply"]);
+  const urlButton = buttons[0];
+  const replyButton = buttons[1];
+  assertEquals(urlButton.type, "url");
+  if (urlButton.type !== "url") return;
+  assertEquals(urlButton.url.display_text, "Site");
+  assertEquals(urlButton.url.url, "https://example.com");
+  assertEquals(replyButton.type, "reply");
+  if (replyButton.type !== "reply") return;
+  assertEquals(replyButton.reply.id, "a");
+});
+
+Deno.test("buildOutgoingButtonsMessage: two website buttons", () => {
+  const payload = buildOutgoingButtonsMessage({
+    body: "Two sites",
+    buttons: [
+      { type: "website", title: "A", url: "https://a.example" },
+      { type: "website", title: "B", url: "https://b.example" },
+    ],
+  });
+  assertEquals(payload.interactive.type, "button");
+  if (payload.interactive.type !== "button") return;
+  assertEquals(
+    payload.interactive.action.buttons.map((button) => button.type),
+    ["url", "url"],
   );
 });
 
-Deno.test("buildOutgoingButtonsMessage: website requires single button", () => {
+Deno.test("buildOutgoingButtonsMessage: rejects more than two website buttons", () => {
   assertThrows(
     () =>
       buildOutgoingButtonsMessage({
-        body: "Two sites",
+        body: "Three sites",
         buttons: [
           { type: "website", title: "A", url: "https://a.example" },
           { type: "website", title: "B", url: "https://b.example" },
+          { type: "website", title: "C", url: "https://c.example" },
         ],
       }),
     Error,
-    "exactly one button",
+    "at most 2 website buttons",
+  );
+});
+
+Deno.test("buildOutgoingButtonsMessage: reply-only still caps at 3", () => {
+  assertThrows(
+    () =>
+      buildOutgoingButtonsMessage({
+        body: "Too many replies",
+        buttons: [
+          { id: "a", title: "A" },
+          { id: "b", title: "B" },
+          { id: "c", title: "C" },
+          { id: "d", title: "D" },
+        ],
+      }),
+    Error,
+    "1–3 buttons",
   );
 });
