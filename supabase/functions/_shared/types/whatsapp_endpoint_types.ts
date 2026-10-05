@@ -86,6 +86,21 @@ export type OutgoingFlow = {
   };
 };
 
+export type OutgoingReplyButton = {
+  type: "reply";
+  reply: { id: string; title: string };
+};
+
+/** URL/CTA entry in a mixed `interactive.type: "button"` payload. */
+export type OutgoingUrlButton = {
+  type: "url";
+  url: { display_text: string; url: string };
+};
+
+export type OutgoingInteractiveButton =
+  | OutgoingReplyButton
+  | OutgoingUrlButton;
+
 export type OutgoingReplyButtons = {
   type: "interactive";
   interactive: {
@@ -94,10 +109,7 @@ export type OutgoingReplyButtons = {
     body: { text: string };
     footer?: { text: string };
     action: {
-      buttons: {
-        type: "reply";
-        reply: { id: string; title: string };
-      }[];
+      buttons: OutgoingInteractiveButton[];
     };
   };
 };

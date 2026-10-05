@@ -183,7 +183,11 @@ export type FlowMessageData = {
 
 type FlowPart = DataPart<"flow", FlowMessageData>;
 
-/** Session buttons: quick replies or a single website link (WhatsApp `cta_url`). */
+/**
+ * Session buttons: quick replies and/or website links.
+ * Website-only with one URL still maps to WhatsApp `cta_url`. Mixed or
+ * two-URL messages use `interactive.type: "button"` (CTA first, then replies).
+ */
 export type ReplyButton =
   | {
     type?: "reply";
