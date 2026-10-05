@@ -10,7 +10,7 @@ export type OutgoingButtonsInteractive = OutgoingReplyButtons | OutgoingCtaUrl;
 
 const MAX_BUTTONS = 10;
 const MAX_WEBSITE_BUTTONS = 2;
-const MAX_REPLY_ONLY_BUTTONS = 3;
+const MAX_SESSION_REPLY_BUTTONS = 3;
 
 function buttonKind(button: ReplyButton): "reply" | "website" {
   return button.type === "website" ? "website" : "reply";
@@ -72,7 +72,7 @@ function assertHttpUrl(url: string): void {
 function toOutgoingButton(button: ReplyButton): OutgoingInteractiveButton {
   if (buttonKind(button) === "website") {
     const { title, url } = normalizeWebsiteButton(button);
-    return { type: "url", url: { display_text: title, url } };
+    return { type: "cta_url", cta_url: { display_text: title, url } };
   }
   const { id, title } = normalizeReplyButton(button);
   return { type: "reply", reply: { id, title } };
@@ -132,6 +132,7 @@ export function buildOutgoingButtonsMessage(
     ...(footer ? { footer: { text: footer } } : {}),
   };
 
+  // Session Cloud API: one URL button is interactive type cta_url.
   if (websiteButtons.length === 1 && replyButtons.length === 0) {
     const { title, url } = normalizeWebsiteButton(websiteButtons[0]);
     return {
@@ -150,20 +151,30 @@ export function buildOutgoingButtonsMessage(
     };
   }
 
-  if (websiteButtons.length === 0) {
-    if (
-      replyButtons.length < 1 ||
-      replyButtons.length > MAX_REPLY_ONLY_BUTTONS
-    ) {
-      throw new Error("Reply-button message requires 1–3 buttons");
-    }
+  // Session Cloud API: 1–3 reply buttons, no category field.
+  if (
+    websiteButtons.length === 0 &&
+    replyButtons.length <= MAX_SESSION_REPLY_BUTTONS
+  ) {
+    return {
+      type: "interactive",
+      interactive: {
+        type: "button",
+        ...shared,
+        action: {
+          buttons: replyButtons.map(toOutgoingButton),
+        },
+      },
+    };
   }
 
-  // Meta lists CTA URL buttons before reply buttons in mixed messages.
+  // Direct Send on the same Cloud API POST /{phone-number-id}/messages.
+  // Without category, Meta treats this as a session message and rejects mixes.
+  // CTA URL buttons must be listed before reply buttons.
   const ordered = [...websiteButtons, ...replyButtons];
-
   return {
     type: "interactive",
+    category: "utility",
     interactive: {
       type: "button",
       ...shared,
