@@ -6,8 +6,10 @@ import { downloadFromStorage } from "./media.ts";
 import type {
   ButtonsMessageData,
   Database,
+  FlowMessageData,
   IncomingMessage,
   MessageRow,
+  NfmReplyData,
   OrganizationRow,
   OutgoingMessage,
 } from "./supabase.ts";
@@ -52,12 +54,20 @@ export type LunaRecentMessage = {
     | "video"
     | "button"
     | "contacts"
+    | "flow_reply"
     | "other";
   text?: string;
   /** Reply-button / list / template-button id when `kind` is `button`. */
   buttonId?: string;
   /** Shared WhatsApp contact cards when `kind` is `contacts`. */
   contacts?: LunaContact[];
+  /**
+   * WhatsApp Flow completion (`nfm_reply`) fields when `kind` is `flow_reply`.
+   * `flowToken` is lifted from parsed `response.flow_token` when present.
+   */
+  flowName?: string;
+  flowToken?: string;
+  response?: Record<string, unknown>;
   mimeType?: string;
   base64Data?: string | null;
   fileName?: string;
@@ -81,12 +91,26 @@ export type LunaBatchPart = {
    * Stable key for the inbound row; WAMID is Meta’s id on `id`.
    */
   openbspId: string;
-  kind: "text" | "image" | "audio" | "document" | "button" | "contacts";
+  kind:
+    | "text"
+    | "image"
+    | "audio"
+    | "document"
+    | "button"
+    | "contacts"
+    | "flow_reply";
   text?: string;
   /** Reply-button / list / template-button id when `kind` is `button`. */
   buttonId?: string;
   /** Shared WhatsApp contact cards when `kind` is `contacts`. */
   contacts?: LunaContact[];
+  /**
+   * WhatsApp Flow completion (`nfm_reply`) fields when `kind` is `flow_reply`.
+   * `flowToken` is lifted from parsed `response.flow_token` when present.
+   */
+  flowName?: string;
+  flowToken?: string;
+  response?: Record<string, unknown>;
   mimeType?: string;
   base64Data?: string;
   fileName?: string;
@@ -387,7 +411,8 @@ async function reclaimStaleFlushingBatches(
 /**
  * Debounce before flushing a Luna batch for this message.
  * - Forwarded: 2s so a same-burst follow-up can join the open batch.
- * - Everything else (incl. button/list taps): 0 — flush immediately.
+ * - Everything else (incl. button/list taps and Flow completions): 0 —
+ *   flush immediately.
  */
 export function lunaWhatsAppBatchDebounceSecondsForMessage(
   message: MessageRow,
@@ -569,6 +594,64 @@ function lunaOutgoingButtonsText(data: ButtonsMessageData): string {
   return body ? `${body}\n${suffix}` : suffix;
 }
 
+function lunaOutgoingFlowText(data: FlowMessageData): string {
+  const body = data.body?.trim() ?? "";
+  const cta = data.flow_cta?.trim() ?? "";
+  if (!cta) return body;
+  const suffix = `[Flow: ${cta}]`;
+  return body ? `${body}\n${suffix}` : suffix;
+}
+
+function parseFlowReplyResponse(
+  data: NfmReplyData,
+): Record<string, unknown> | undefined {
+  if (
+    data.response && typeof data.response === "object" &&
+    !Array.isArray(data.response)
+  ) {
+    return data.response as Record<string, unknown>;
+  }
+  if (typeof data.response_json !== "string" || !data.response_json.trim()) {
+    return undefined;
+  }
+  try {
+    const parsed = JSON.parse(data.response_json) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    // leave unparsed
+  }
+  return undefined;
+}
+
+/** Map inbound WhatsApp Flow completion (`nfm_reply` / `flow-reply`) for Luna. */
+export function lunaFlowReplyFromContent(
+  content: IncomingMessage,
+): {
+  text: string;
+  flowName?: string;
+  flowToken?: string;
+  response?: Record<string, unknown>;
+} | null {
+  if (content.type !== "data" || content.kind !== "flow-reply") return null;
+
+  const data = content.data;
+  const response = parseFlowReplyResponse(data);
+  const flowToken = stringField(response ?? null, "flow_token");
+  const flowName = data.name?.trim() || undefined;
+  const body = data.body?.trim() ?? "";
+  const text = body ||
+    (flowToken ? `[Flow completed: ${flowToken}]` : "[Flow completed]");
+
+  return {
+    text,
+    ...(flowName && { flowName }),
+    ...(flowToken && { flowToken }),
+    ...(response && { response }),
+  };
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -696,8 +779,18 @@ async function messageToLunaRecent(
     ...lunaContextFields(content, opts.openbspIdByExternalId),
   };
 
-  if (content.type === "data" && content.kind === "flow-reply") {
-    return null;
+  const flowReply = content.type === "data"
+    ? lunaFlowReplyFromContent(content as IncomingMessage)
+    : null;
+  if (flowReply) {
+    return {
+      ...base,
+      kind: "flow_reply",
+      text: flowReply.text,
+      ...(flowReply.flowName && { flowName: flowReply.flowName }),
+      ...(flowReply.flowToken && { flowToken: flowReply.flowToken }),
+      ...(flowReply.response && { response: flowReply.response }),
+    };
   }
 
   const tap = content.type === "data" && content.kind !== "buttons"
@@ -717,6 +810,14 @@ async function messageToLunaRecent(
       ...base,
       kind: "text",
       text: lunaOutgoingButtonsText(content.data),
+    };
+  }
+
+  if (content.type === "data" && content.kind === "flow") {
+    return {
+      ...base,
+      kind: "text",
+      text: lunaOutgoingFlowText(content.data),
     };
   }
 
@@ -789,6 +890,18 @@ async function messageToBatchPart(
 
   if (content.type === "text" && content.text?.trim()) {
     return { ...base, kind: "text", text: content.text.trim() };
+  }
+
+  const flowReply = lunaFlowReplyFromContent(content);
+  if (flowReply) {
+    return {
+      ...base,
+      kind: "flow_reply",
+      text: flowReply.text,
+      ...(flowReply.flowName && { flowName: flowReply.flowName }),
+      ...(flowReply.flowToken && { flowToken: flowReply.flowToken }),
+      ...(flowReply.response && { response: flowReply.response }),
+    };
   }
 
   const tap = lunaButtonTapFromContent(content);
@@ -1553,8 +1666,6 @@ export function shouldEnqueueLunaWhatsAppBatch(message: MessageRow): boolean {
   if (message.direction !== "incoming") return false;
   if (message.service !== "whatsapp") return false;
   if (!message.contact_address) return false;
-  const content = message.content as IncomingMessage;
-  if (content.type === "data" && content.kind === "flow-reply") return false;
   return true;
 }
 
