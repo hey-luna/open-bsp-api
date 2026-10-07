@@ -315,7 +315,7 @@ function createMcpServer(
     "send_message",
     {
       description:
-        "Send a text, template, flow, or buttons message (quick reply or website link). Enforces 24h service window except for templates.",
+        "Send a text, template, flow, or buttons message (quick replies and/or website links). Enforces 24h service window except for templates. Mixed reply+website buttons are sent via Cloud API Direct Send (category utility).",
       inputSchema: {
         contact_phone: z.string().describe("Contact's phone number"),
         content: z.any().describe(
