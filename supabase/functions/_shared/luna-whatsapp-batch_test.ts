@@ -3,17 +3,15 @@ import {
   batchPartKindFromMime,
   FORWARDED_DEBOUNCE_SECONDS,
   lunaBatchPartFileKind,
-  lunaFlowReplyFromContent,
   lunaWhatsAppBatchDebounceSecondsForMessage,
   openbspIdByExternalIdFromRows,
   planSiblingOpenBatchUpdates,
   replyToOpenbspIdFromMap,
   resolveAbsorbMessageIds,
-  shouldEnqueueLunaWhatsAppBatch,
   SIBLING_CREATED_WITHIN_MS,
   SIBLING_TIMESTAMP_WINDOW_MS,
 } from "./luna-whatsapp-batch.ts";
-import type { IncomingMessage, MessageRow } from "./supabase.ts";
+import type { MessageRow } from "./supabase.ts";
 
 function incomingText(opts: {
   id?: string;
@@ -58,29 +56,6 @@ function incomingButton(): MessageRow {
   } as unknown as MessageRow;
 }
 
-function incomingFlowReply(opts?: {
-  body?: string;
-  name?: string;
-  response_json?: string;
-  response?: Record<string, unknown>;
-}): MessageRow {
-  return {
-    ...incomingText({}),
-    content: {
-      version: "1",
-      type: "data",
-      kind: "flow-reply",
-      data: {
-        name: opts?.name ?? "flow",
-        body: opts?.body ?? "Sent",
-        response_json: opts?.response_json ??
-          '{"flow_token":"tok-123","answer":"yes"}',
-        ...(opts?.response ? { response: opts.response } : {}),
-      },
-    },
-  } as unknown as MessageRow;
-}
-
 Deno.test("debounce: normal text flushes immediately", () => {
   assertEquals(lunaWhatsAppBatchDebounceSecondsForMessage(incomingText({})), 0);
 });
@@ -97,64 +72,6 @@ Deno.test("debounce: forwarded text waits 2s", () => {
 
 Deno.test("debounce: button tap flushes immediately", () => {
   assertEquals(lunaWhatsAppBatchDebounceSecondsForMessage(incomingButton()), 0);
-});
-
-Deno.test("debounce: flow-reply flushes immediately", () => {
-  assertEquals(
-    lunaWhatsAppBatchDebounceSecondsForMessage(incomingFlowReply()),
-    0,
-  );
-});
-
-Deno.test("shouldEnqueue: includes WhatsApp Flow completions", () => {
-  assertEquals(shouldEnqueueLunaWhatsAppBatch(incomingFlowReply()), true);
-  assertEquals(shouldEnqueueLunaWhatsAppBatch(incomingText({})), true);
-  assertEquals(
-    shouldEnqueueLunaWhatsAppBatch({
-      ...incomingFlowReply(),
-      direction: "outgoing",
-    } as unknown as MessageRow),
-    false,
-  );
-});
-
-Deno.test("lunaFlowReplyFromContent: maps nfm_reply fields for Luna", () => {
-  const mapped = lunaFlowReplyFromContent(
-    incomingFlowReply({
-      body: "Sent",
-      name: "flow",
-      response: { flow_token: "tok-123", answer: "yes" },
-    }).content as IncomingMessage,
-  );
-  assertEquals(mapped, {
-    text: "Sent",
-    flowName: "flow",
-    flowToken: "tok-123",
-    response: { flow_token: "tok-123", answer: "yes" },
-  });
-});
-
-Deno.test("lunaFlowReplyFromContent: parses response_json when needed", () => {
-  const mapped = lunaFlowReplyFromContent(
-    incomingFlowReply({
-      body: "",
-      response_json: '{"flow_token":"tok-456","city":"TLV"}',
-    }).content as IncomingMessage,
-  );
-  assertEquals(mapped?.flowToken, "tok-456");
-  assertEquals(mapped?.response, { flow_token: "tok-456", city: "TLV" });
-  assertEquals(mapped?.text, "[Flow completed: tok-456]");
-});
-
-Deno.test("lunaFlowReplyFromContent: ignores non-flow content", () => {
-  assertEquals(
-    lunaFlowReplyFromContent(incomingText({}).content as IncomingMessage),
-    null,
-  );
-  assertEquals(
-    lunaFlowReplyFromContent(incomingButton().content as IncomingMessage),
-    null,
-  );
 });
 
 Deno.test(
