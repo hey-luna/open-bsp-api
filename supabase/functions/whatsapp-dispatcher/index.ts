@@ -247,6 +247,10 @@ function outgoingMessageToEndpointMessage({
         ...baseMessage,
         type: "text",
         text: {
+          // Required for WhatsApp to attempt a link preview of the first
+          // http(s) URL in the body. Without this, URLs are clickable only.
+          // https://developers.facebook.com/docs/whatsapp/cloud-api/messages/text-messages
+          preview_url: true,
           body: markdownToWhatsApp(content.text),
         },
       };
