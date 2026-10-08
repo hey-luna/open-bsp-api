@@ -266,5 +266,6 @@ Types: text, file, data. Kinds vary by type (text: text/reaction/caption; file: 
   "content": {"version": "1", "type": "text", "kind": "text", "text": "Hello!"}
 }
 \`\`\`
+Optional on text content: \`"preview_url": true\` asks WhatsApp to render a link preview for the first http(s) URL in \`text\`.
 Note: The \`reply\` tool is easier for sending WhatsApp messages when the channel is active.
 `;

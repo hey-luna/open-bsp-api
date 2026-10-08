@@ -63,6 +63,11 @@ const RESPOND_TOOL: ResponsesTool = {
               properties: {
                 type: { type: "string", enum: ["text"] },
                 text: { type: "string" },
+                preview_url: {
+                  type: "boolean",
+                  description:
+                    "WhatsApp only. Set true to show a link preview for the first http(s) URL in text.",
+                },
               },
               required: ["type", "text"],
               additionalProperties: false,
@@ -507,7 +512,7 @@ export class ResponsesHandler
 
     const args = JSON.parse(respondCall.arguments) as {
       messages: Array<
-        | { type: "text"; text: string }
+        | { type: "text"; text: string; preview_url?: boolean }
         | { type: "file"; uri: string; name?: string; text?: string }
       >;
     };
@@ -533,6 +538,7 @@ export class ResponsesHandler
             type: "text",
             kind: "text",
             text: msg.text,
+            ...(msg.preview_url ? { preview_url: true } : {}),
           },
         });
       } else if (msg.type === "file") {

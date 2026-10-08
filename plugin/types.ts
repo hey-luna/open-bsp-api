@@ -13,6 +13,8 @@ export type TextPart = {
   type: "text";
   kind: "text" | "reaction" | "caption" | "transcription" | "description";
   text: string;
+  /** WhatsApp only (kind `text`): request a link preview for the first URL. */
+  preview_url?: boolean;
   artifacts?: Part[];
 };
 
