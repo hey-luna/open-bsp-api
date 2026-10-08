@@ -97,6 +97,13 @@ export type TextPart = {
   type: "text";
   kind: "text" | "reaction" | "caption" | "transcription" | "description";
   text: string;
+  /**
+   * WhatsApp only (kind `text`): when true, ask the Cloud API to render a
+   * link preview for the first http(s) URL in `text`. Omitted/false = no
+   * preview (URL stays clickable).
+   * https://developers.facebook.com/docs/whatsapp/cloud-api/messages/text-messages
+   */
+  preview_url?: boolean;
   artifacts?: Part[];
 };
 

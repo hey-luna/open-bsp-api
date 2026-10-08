@@ -247,6 +247,9 @@ function outgoingMessageToEndpointMessage({
         ...baseMessage,
         type: "text",
         text: {
+          // Opt-in: only set when the outgoing TextPart requested it.
+          // https://developers.facebook.com/docs/whatsapp/cloud-api/messages/text-messages
+          ...(content.preview_url ? { preview_url: true } : {}),
           body: markdownToWhatsApp(content.text),
         },
       };
