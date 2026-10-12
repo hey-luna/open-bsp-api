@@ -12,6 +12,8 @@ import {
   shouldEnqueueLunaWhatsAppBatch,
   SIBLING_CREATED_WITHIN_MS,
   SIBLING_TIMESTAMP_WINDOW_MS,
+  sortMessageIdsForLunaOrder,
+  sortMessageRowsForLunaOrder,
 } from "./luna-whatsapp-batch.ts";
 import type { IncomingMessage, MessageRow } from "./supabase.ts";
 
@@ -315,6 +317,56 @@ Deno.test("absorb: ignores candidate outside ±1s Meta window", () => {
   });
   assertEquals(result, ["msg-a"]);
 });
+
+Deno.test(
+  "luna order: same Meta second prefers created_at then enqueue index",
+  () => {
+    const ts = "2026-10-12T12:30:14.000Z";
+    // UUID lexicographic order would put msg-b before msg-a; enqueue says a then b.
+    const rows = sortMessageRowsForLunaOrder(
+      [
+        {
+          id: "msg-b",
+          timestamp: ts,
+          created_at: "2026-10-12T12:30:14.050Z",
+        },
+        {
+          id: "msg-a",
+          timestamp: ts,
+          created_at: "2026-10-12T12:30:14.050Z",
+        },
+      ],
+      ["msg-a", "msg-b"],
+    );
+    assertEquals(rows.map((r) => r.id), ["msg-a", "msg-b"]);
+
+    // Distinct created_at beats enqueue / UUID order.
+    const byCreated = sortMessageIdsForLunaOrder(
+      ["msg-b6", "msg-class"],
+      new Map([
+        ["msg-b6", {
+          timestamp: ts,
+          created_at: "2026-10-12T12:30:14.002Z",
+        }],
+        ["msg-class", {
+          timestamp: ts,
+          created_at: "2026-10-12T12:30:14.001Z",
+        }],
+      ]),
+    );
+    assertEquals(byCreated, ["msg-class", "msg-b6"]);
+
+    // Indexed Meta ms (webhook disambiguation) sorts without needing created_at.
+    const byMs = sortMessageIdsForLunaOrder(
+      ["msg-b6", "msg-class"],
+      new Map([
+        ["msg-b6", { timestamp: "2026-10-12T12:30:14.001Z" }],
+        ["msg-class", { timestamp: "2026-10-12T12:30:14.000Z" }],
+      ]),
+    );
+    assertEquals(byMs, ["msg-class", "msg-b6"]);
+  },
+);
 
 Deno.test("open-batch plan: cancels fully absorbed sibling batch", () => {
   assertEquals(

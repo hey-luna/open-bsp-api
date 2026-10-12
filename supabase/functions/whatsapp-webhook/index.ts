@@ -23,6 +23,7 @@ import {
   uploadToStorage,
 } from "../_shared/media.ts";
 import { whatsappToMarkdown } from "../_shared/markdown.ts";
+import { whatsappUnixSecondsToIso } from "../_shared/whatsapp-timestamp.ts";
 
 const API_VERSION = "v24.0";
 const VERIFY_TOKEN = Deno.env.get("WHATSAPP_VERIFY_TOKEN");
@@ -709,12 +710,20 @@ async function processMessage(request: Request): Promise<Response> {
       if (
         (field === "messages" || field === "history") && "messages" in value
       ) {
-        for (const webhookMessage of value.messages ?? []) {
+        // Index ms: Meta timestamps are Unix seconds; same-second parts must
+        // keep webhook array order for Luna batchParts / conversation sorts.
+        for (
+          const [index, webhookMessage] of (value.messages ?? []).entries()
+        ) {
           // Payload-literal keying: prefer the phone number, fall back to the
           // BSUID (present only-phone-less for username users). The conversation
           // is created/looked up on this address and never re-keyed.
           const contact_address = webhookMessage.from ??
             webhookMessage.from_user_id;
+          const timestamp = whatsappUnixSecondsToIso(
+            webhookMessage.timestamp,
+            index,
+          );
 
           if (webhookMessage.type === "errors") {
             errors.push(...webhookMessage.errors);
@@ -726,8 +735,7 @@ async function processMessage(request: Request): Promise<Response> {
           if (webhookMessage.type === "revoke") {
             revokes.push({
               original_message_id: webhookMessage.revoke.original_message_id,
-              timestamp: new Date(webhookMessage.timestamp * 1000)
-                .toISOString(),
+              timestamp,
             });
             continue;
           }
@@ -748,8 +756,7 @@ async function processMessage(request: Request): Promise<Response> {
             edits.push({
               original_message_id: webhookMessage.edit.original_message_id,
               text,
-              timestamp: new Date(webhookMessage.timestamp * 1000)
-                .toISOString(),
+              timestamp,
             });
             continue;
           }
@@ -770,7 +777,7 @@ async function processMessage(request: Request): Promise<Response> {
             contact_address,
             direction: "incoming" as const,
             content,
-            timestamp: new Date(webhookMessage.timestamp * 1000).toISOString(),
+            timestamp,
           };
 
           messages.push(message);
@@ -826,9 +833,16 @@ async function processMessage(request: Request): Promise<Response> {
         (field === "smb_message_echoes" || field === "history") &&
         "message_echoes" in value
       ) {
-        for (const webhookMessage of value.message_echoes ?? []) {
+        for (
+          const [index, webhookMessage] of (value.message_echoes ?? [])
+            .entries()
+        ) {
           const contact_address = webhookMessage.to ??
             webhookMessage.to_user_id;
+          const timestamp = whatsappUnixSecondsToIso(
+            webhookMessage.timestamp,
+            index,
+          );
 
           if (webhookMessage.type === "errors") {
             errors.push(...webhookMessage.errors);
@@ -841,8 +855,7 @@ async function processMessage(request: Request): Promise<Response> {
           if (webhookMessage.type === "revoke") {
             revokes.push({
               original_message_id: webhookMessage.revoke.original_message_id,
-              timestamp: new Date(webhookMessage.timestamp * 1000)
-                .toISOString(),
+              timestamp,
             });
             continue;
           }
@@ -862,8 +875,7 @@ async function processMessage(request: Request): Promise<Response> {
             edits.push({
               original_message_id: webhookMessage.edit.original_message_id,
               text,
-              timestamp: new Date(webhookMessage.timestamp * 1000)
-                .toISOString(),
+              timestamp,
             });
             continue;
           }
@@ -885,9 +897,9 @@ async function processMessage(request: Request): Promise<Response> {
             direction: "outgoing" as const,
             content: content as OutgoingMessage, // Incoming are a superset of outgoing, except for templates
             status: {
-              sent: new Date(webhookMessage.timestamp * 1000).toISOString(),
+              sent: timestamp,
             },
-            timestamp: new Date(webhookMessage.timestamp * 1000).toISOString(),
+            timestamp,
           };
 
           messages.push(message);
@@ -943,11 +955,17 @@ async function processMessage(request: Request): Promise<Response> {
                 },
               });
 
-              for (const webhookMessage of thread.messages) {
+              for (
+                const [index, webhookMessage] of thread.messages.entries()
+              ) {
                 // Echoes (business → user) carry a recipient; incoming messages
                 // (user → business) do not.
                 const isEcho = "to" in webhookMessage ||
                   "to_user_id" in webhookMessage;
+                const timestamp = whatsappUnixSecondsToIso(
+                  webhookMessage.timestamp,
+                  index,
+                );
 
                 if (webhookMessage.type === "errors") {
                   errors.push(...webhookMessage.errors);
@@ -962,8 +980,7 @@ async function processMessage(request: Request): Promise<Response> {
                   revokes.push({
                     original_message_id:
                       webhookMessage.revoke.original_message_id,
-                    timestamp: new Date(webhookMessage.timestamp * 1000)
-                      .toISOString(),
+                    timestamp,
                   });
                   continue;
                 }
@@ -981,8 +998,7 @@ async function processMessage(request: Request): Promise<Response> {
                     original_message_id:
                       webhookMessage.edit.original_message_id,
                     text,
-                    timestamp: new Date(webhookMessage.timestamp * 1000)
-                      .toISOString(),
+                    timestamp,
                   });
                   continue;
                 }
@@ -1020,13 +1036,9 @@ async function processMessage(request: Request): Promise<Response> {
                     direction: "outgoing" as const,
                     content: content as OutgoingMessage, // Incoming is a superset of outgoing, except for templates
                     status: {
-                      [status]: new Date(
-                        webhookMessage.timestamp * 1000,
-                      ).toISOString(),
+                      [status]: timestamp,
                     },
-                    timestamp: new Date(
-                      webhookMessage.timestamp * 1000,
-                    ).toISOString(),
+                    timestamp,
                   }
                   : {
                     organization_id,
@@ -1039,13 +1051,9 @@ async function processMessage(request: Request): Promise<Response> {
                     direction: "incoming" as const,
                     content, // Incoming is a superset of outgoing, except for templates
                     status: {
-                      [status]: new Date(
-                        webhookMessage.timestamp * 1000,
-                      ).toISOString(),
+                      [status]: timestamp,
                     },
-                    timestamp: new Date(
-                      webhookMessage.timestamp * 1000,
-                    ).toISOString(),
+                    timestamp,
                   };
 
                 messages.push(message);
