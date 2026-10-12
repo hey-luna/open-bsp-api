@@ -12,6 +12,8 @@ import {
   shouldEnqueueLunaWhatsAppBatch,
   SIBLING_CREATED_WITHIN_MS,
   SIBLING_TIMESTAMP_WINDOW_MS,
+  sortMessageIdsForLunaOrder,
+  sortMessageRowsForLunaOrder,
 } from "./luna-whatsapp-batch.ts";
 import type { IncomingMessage, MessageRow } from "./supabase.ts";
 
@@ -315,6 +317,64 @@ Deno.test("absorb: ignores candidate outside ±1s Meta window", () => {
   });
   assertEquals(result, ["msg-a"]);
 });
+
+Deno.test(
+  "luna order: same Meta second prefers webhook_index then created_at",
+  () => {
+    const ts = "2026-10-12T12:30:14.000Z";
+    // Meta payload order [class, b6] wins over enqueue / UUID / created_at.
+    const byWebhookIndex = sortMessageIdsForLunaOrder(
+      ["msg-b6", "msg-class"],
+      new Map([
+        ["msg-b6", {
+          timestamp: ts,
+          webhook_index: 1,
+          created_at: "2026-10-12T12:30:14.001Z",
+        }],
+        ["msg-class", {
+          timestamp: ts,
+          webhook_index: 0,
+          created_at: "2026-10-12T12:30:14.002Z",
+        }],
+      ]),
+    );
+    assertEquals(byWebhookIndex, ["msg-class", "msg-b6"]);
+
+    // Without webhook_index, enqueue order beats UUID lexicographic order.
+    const rows = sortMessageRowsForLunaOrder(
+      [
+        {
+          id: "msg-b",
+          timestamp: ts,
+          created_at: "2026-10-12T12:30:14.050Z",
+        },
+        {
+          id: "msg-a",
+          timestamp: ts,
+          created_at: "2026-10-12T12:30:14.050Z",
+        },
+      ],
+      ["msg-a", "msg-b"],
+    );
+    assertEquals(rows.map((r) => r.id), ["msg-a", "msg-b"]);
+
+    // Distinct created_at beats enqueue / UUID order.
+    const byCreated = sortMessageIdsForLunaOrder(
+      ["msg-b6", "msg-class"],
+      new Map([
+        ["msg-b6", {
+          timestamp: ts,
+          created_at: "2026-10-12T12:30:14.002Z",
+        }],
+        ["msg-class", {
+          timestamp: ts,
+          created_at: "2026-10-12T12:30:14.001Z",
+        }],
+      ]),
+    );
+    assertEquals(byCreated, ["msg-class", "msg-b6"]);
+  },
+);
 
 Deno.test("open-batch plan: cancels fully absorbed sibling batch", () => {
   assertEquals(

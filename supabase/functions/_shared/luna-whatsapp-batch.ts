@@ -187,6 +187,88 @@ async function findOpenBatchForContact(
   return data;
 }
 
+/** Fields used to order messages for Luna batchParts / merges. */
+export type MessageTimeOrderFields = {
+  id: string;
+  timestamp: string;
+  /** 0-based index in Meta webhook `messages` / `message_echoes` array. */
+  webhook_index?: number | null;
+  created_at?: string | null;
+};
+
+/**
+ * Meta WhatsApp timestamps are second-precision; ties are common.
+ * Prefer Meta time, then Meta webhook array index, then ingest `created_at`,
+ * then enqueue index, then id.
+ */
+export function compareMessagesForLunaOrder(
+  a: MessageTimeOrderFields,
+  b: MessageTimeOrderFields,
+  enqueueIndex?: Map<string, number>,
+): number {
+  if (a.timestamp !== b.timestamp) {
+    return a.timestamp < b.timestamp ? -1 : 1;
+  }
+  const wa = a.webhook_index;
+  const wb = b.webhook_index;
+  if (wa != null && wb != null && wa !== wb) return wa - wb;
+  // Prefer the row that still knows its Meta payload position.
+  if (wa != null && wb == null) return -1;
+  if (wa == null && wb != null) return 1;
+  const ca = a.created_at ?? "";
+  const cb = b.created_at ?? "";
+  if (ca !== cb) return ca < cb ? -1 : 1;
+  if (enqueueIndex) {
+    const ia = enqueueIndex.get(a.id);
+    const ib = enqueueIndex.get(b.id);
+    if (ia != null && ib != null && ia !== ib) return ia - ib;
+  }
+  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+}
+
+export function sortMessageRowsForLunaOrder<T extends MessageTimeOrderFields>(
+  rows: T[],
+  enqueueOrderIds?: string[],
+): T[] {
+  const enqueueIndex = enqueueOrderIds
+    ? new Map(enqueueOrderIds.map((id, i) => [id, i]))
+    : undefined;
+  return [...rows].sort((a, b) =>
+    compareMessagesForLunaOrder(a, b, enqueueIndex)
+  );
+}
+
+export function sortMessageIdsForLunaOrder(
+  messageIds: string[],
+  byId: Map<
+    string,
+    {
+      timestamp?: string;
+      webhook_index?: number | null;
+      created_at?: string | null;
+    }
+  >,
+): string[] {
+  const enqueueIndex = new Map(messageIds.map((id, i) => [id, i]));
+  return [...messageIds].sort((a, b) =>
+    compareMessagesForLunaOrder(
+      {
+        id: a,
+        timestamp: byId.get(a)?.timestamp ?? "",
+        webhook_index: byId.get(a)?.webhook_index,
+        created_at: byId.get(a)?.created_at,
+      },
+      {
+        id: b,
+        timestamp: byId.get(b)?.timestamp ?? "",
+        webhook_index: byId.get(b)?.webhook_index,
+        created_at: byId.get(b)?.created_at,
+      },
+      enqueueIndex,
+    )
+  );
+}
+
 async function sortMessageIdsByTimestamp(
   client: SupabaseClient<Database>,
   messageIds: string[],
@@ -195,22 +277,28 @@ async function sortMessageIdsByTimestamp(
 
   const { data: messages } = await client
     .from("messages")
-    .select("id, timestamp")
+    .select("id, timestamp, webhook_index, created_at")
     .in("id", messageIds)
     .throwOnError();
 
-  const byTs = new Map<string, string>(
-    (messages ?? []).map((row: { id: string; timestamp: string }) => [
+  const byId = new Map(
+    (messages ?? []).map((
+      row: {
+        id: string;
+        timestamp: string;
+        webhook_index: number | null;
+        created_at: string | null;
+      },
+    ) => [
       row.id,
-      row.timestamp,
+      {
+        timestamp: row.timestamp,
+        webhook_index: row.webhook_index,
+        created_at: row.created_at,
+      },
     ]),
   );
-  return [...messageIds].sort((a, b) => {
-    const ta = byTs.get(a) ?? "";
-    const tb = byTs.get(b) ?? "";
-    if (ta !== tb) return ta < tb ? -1 : 1;
-    return a < b ? -1 : a > b ? 1 : 0;
-  });
+  return sortMessageIdsForLunaOrder(messageIds, byId);
 }
 
 /**
@@ -227,7 +315,7 @@ async function undeliveredMessageIdsFromBatch(
 
   const { data: messages } = await client
     .from("messages")
-    .select("id, status, timestamp")
+    .select("id, status, timestamp, webhook_index, created_at")
     .in("id", batch.message_ids)
     .throwOnError();
 
@@ -235,15 +323,14 @@ async function undeliveredMessageIdsFromBatch(
     id: string;
     status: MessageRow["status"];
     timestamp: string;
+    webhook_index?: number | null;
+    created_at?: string | null;
   };
   const rows = (messages ?? []) as StatusRow[];
   const found = new Set(rows.map((row) => row.id));
-  const undelivered = rows
-    .filter((row) => !messageLikelyDeliveredToLuna(row.status))
-    .sort((a, b) =>
-      a.timestamp < b.timestamp ? -1 : a.timestamp > b.timestamp ? 1 : 0
-    )
-    .map((row) => row.id);
+  const undelivered = sortMessageRowsForLunaOrder(
+    rows.filter((row) => !messageLikelyDeliveredToLuna(row.status)),
+  ).map((row) => row.id);
 
   // Preserve ids that vanished from messages — safer to retry than drop.
   for (const id of batch.message_ids) {
@@ -984,6 +1071,8 @@ export async function buildLunaWhatsAppBatchPayload(
       .select()
       .in("id", batchMessageIds)
       .order("timestamp", { ascending: true })
+      .order("webhook_index", { ascending: true })
+      .order("created_at", { ascending: true })
       .throwOnError(),
     client
       .from("messages")
@@ -993,6 +1082,8 @@ export async function buildLunaWhatsAppBatchPayload(
       .eq("service", threadFilter.service)
       .gt("timestamp", since)
       .order("timestamp", { ascending: true })
+      .order("webhook_index", { ascending: true })
+      .order("created_at", { ascending: true })
       .throwOnError(),
     client
       .from("messages")
@@ -1001,6 +1092,8 @@ export async function buildLunaWhatsAppBatchPayload(
       .eq("contact_address", threadFilter.contact_address)
       .eq("service", threadFilter.service)
       .order("timestamp", { ascending: false })
+      .order("webhook_index", { ascending: false })
+      .order("created_at", { ascending: false })
       .limit(contextMaxMessages)
       .throwOnError(),
   ]);
@@ -1051,22 +1144,20 @@ export async function buildLunaWhatsAppBatchPayload(
     for (const id of collectReplyToIds(fetched)) repliedToIds.add(id);
   }
 
-  recentRows.sort((a, b) =>
-    a.timestamp < b.timestamp ? -1 : a.timestamp > b.timestamp ? 1 : 0
-  );
+  const orderedRecentRows = sortMessageRowsForLunaOrder(recentRows);
 
   // WAMID → OpenBSP id for replyToOpenbspId on batchParts / recentMessages.
   // Includes batch rows and any reply targets we pulled into recentRows.
   const openbspIdByExternalId = openbspIdByExternalIdFromRows([
     ...(batchMessages ?? []),
-    ...recentRows,
+    ...orderedRecentRows,
   ]);
 
   // Include media bytes for quoted messages (in-window or fetched), so Luna can
   // resolve image/audio/doc quotes even when policy is batch_only.
   const includeMediaInRecent = policy.includeMedia === "all_in_window";
   const recent = (await Promise.all(
-    recentRows.map((message) =>
+    orderedRecentRows.map((message) =>
       messageToLunaRecent(client, message, {
         includeMedia: includeMediaInRecent ||
           Boolean(message.external_id && repliedToIds.has(message.external_id)),
@@ -1075,8 +1166,15 @@ export async function buildLunaWhatsAppBatchPayload(
     ),
   )).filter((row): row is LunaRecentMessage => row !== null);
 
+  // Prefer Meta time, then created_at, then enqueue order in message_ids —
+  // never rely on UUID lexicographic order when Meta seconds collide.
+  const orderedBatchMessages = sortMessageRowsForLunaOrder(
+    batchMessages ?? [],
+    batchMessageIds,
+  );
+
   const batchParts: LunaBatchPart[] = [];
-  for (const message of batchMessages ?? []) {
+  for (const message of orderedBatchMessages) {
     const part = await messageToBatchPart(
       client,
       message,
@@ -1287,7 +1385,7 @@ export async function absorbTimestampSiblingMessages(
       client
         .from("messages")
         .select(
-          "id, timestamp, created_at, direction, service, contact_address, content",
+          "id, timestamp, webhook_index, created_at, direction, service, contact_address, content",
         )
         .in("id", claimed.message_ids)
         .throwOnError(),
@@ -1347,7 +1445,7 @@ export async function absorbTimestampSiblingMessages(
   const { data: candidates } = await client
     .from("messages")
     .select(
-      "id, timestamp, created_at, direction, service, contact_address, content",
+      "id, timestamp, webhook_index, created_at, direction, service, contact_address, content",
     )
     .eq("organization_id", thread.organization_id)
     .eq("contact_address", thread.contact_address)
@@ -1358,16 +1456,30 @@ export async function absorbTimestampSiblingMessages(
     .throwOnError();
 
   const eligibleCandidates: SiblingAbsorbCandidate[] = [];
+  const orderFieldsById = new Map<
+    string,
+    { webhook_index: number | null; created_at: string | null }
+  >();
+  for (const row of batchMessages) {
+    orderFieldsById.set(row.id, {
+      webhook_index: row.webhook_index ?? null,
+      created_at: row.created_at ?? null,
+    });
+  }
   for (const row of candidates ?? []) {
     if (!shouldEnqueueLunaWhatsAppBatch(row as MessageRow)) continue;
     eligibleCandidates.push({
       id: row.id,
       created_at: row.created_at ?? null,
     });
+    orderFieldsById.set(row.id, {
+      webhook_index: row.webhook_index ?? null,
+      created_at: row.created_at ?? null,
+    });
     if (row.timestamp) batchTimestampsById.set(row.id, row.timestamp);
   }
 
-  const messageIds = resolveAbsorbMessageIds({
+  const absorbed = resolveAbsorbMessageIds({
     claimedMessageIds: claimed.message_ids,
     batchTimestampsById,
     candidates: eligibleCandidates,
@@ -1375,7 +1487,19 @@ export async function absorbTimestampSiblingMessages(
     busyIds,
     openBatchMessageIds,
   });
-  if (messageIds === "empty") return "empty";
+  if (absorbed === "empty") return "empty";
+
+  const orderMeta = new Map(
+    [...batchTimestampsById.entries()].map(([id, timestamp]) => [
+      id,
+      {
+        timestamp,
+        webhook_index: orderFieldsById.get(id)?.webhook_index ?? null,
+        created_at: orderFieldsById.get(id)?.created_at ?? null,
+      },
+    ]),
+  );
+  const messageIds = sortMessageIdsForLunaOrder(absorbed, orderMeta);
 
   const mergedSet = new Set(messageIds);
   const idsChanged = messageIds.length !== claimed.message_ids.length ||

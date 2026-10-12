@@ -22,6 +22,10 @@ create table public.messages (
   content jsonb not null,
   status jsonb default jsonb_build_object('pending', now()) not null,
   timestamp timestamp with time zone default now() not null,
+  -- 0-based index in Meta's webhook `messages` / `message_echoes` array.
+  -- Same-second Meta timestamps are common; this preserves payload order for
+  -- Luna batchParts without rewriting Meta's second-precision timestamp.
+  webhook_index integer,
   created_at timestamp with time zone default now() not null,
   updated_at timestamp with time zone default now() not null
 );
