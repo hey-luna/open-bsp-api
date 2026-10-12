@@ -191,12 +191,15 @@ async function findOpenBatchForContact(
 export type MessageTimeOrderFields = {
   id: string;
   timestamp: string;
+  /** 0-based index in Meta webhook `messages` / `message_echoes` array. */
+  webhook_index?: number | null;
   created_at?: string | null;
 };
 
 /**
  * Meta WhatsApp timestamps are second-precision; ties are common.
- * Prefer Meta time, then ingest `created_at`, then enqueue index, then id.
+ * Prefer Meta time, then Meta webhook array index, then ingest `created_at`,
+ * then enqueue index, then id.
  */
 export function compareMessagesForLunaOrder(
   a: MessageTimeOrderFields,
@@ -206,6 +209,12 @@ export function compareMessagesForLunaOrder(
   if (a.timestamp !== b.timestamp) {
     return a.timestamp < b.timestamp ? -1 : 1;
   }
+  const wa = a.webhook_index;
+  const wb = b.webhook_index;
+  if (wa != null && wb != null && wa !== wb) return wa - wb;
+  // Prefer the row that still knows its Meta payload position.
+  if (wa != null && wb == null) return -1;
+  if (wa == null && wb != null) return 1;
   const ca = a.created_at ?? "";
   const cb = b.created_at ?? "";
   if (ca !== cb) return ca < cb ? -1 : 1;
@@ -231,7 +240,14 @@ export function sortMessageRowsForLunaOrder<T extends MessageTimeOrderFields>(
 
 export function sortMessageIdsForLunaOrder(
   messageIds: string[],
-  byId: Map<string, { timestamp?: string; created_at?: string | null }>,
+  byId: Map<
+    string,
+    {
+      timestamp?: string;
+      webhook_index?: number | null;
+      created_at?: string | null;
+    }
+  >,
 ): string[] {
   const enqueueIndex = new Map(messageIds.map((id, i) => [id, i]));
   return [...messageIds].sort((a, b) =>
@@ -239,11 +255,13 @@ export function sortMessageIdsForLunaOrder(
       {
         id: a,
         timestamp: byId.get(a)?.timestamp ?? "",
+        webhook_index: byId.get(a)?.webhook_index,
         created_at: byId.get(a)?.created_at,
       },
       {
         id: b,
         timestamp: byId.get(b)?.timestamp ?? "",
+        webhook_index: byId.get(b)?.webhook_index,
         created_at: byId.get(b)?.created_at,
       },
       enqueueIndex,
@@ -259,16 +277,25 @@ async function sortMessageIdsByTimestamp(
 
   const { data: messages } = await client
     .from("messages")
-    .select("id, timestamp, created_at")
+    .select("id, timestamp, webhook_index, created_at")
     .in("id", messageIds)
     .throwOnError();
 
   const byId = new Map(
     (messages ?? []).map((
-      row: { id: string; timestamp: string; created_at: string | null },
+      row: {
+        id: string;
+        timestamp: string;
+        webhook_index: number | null;
+        created_at: string | null;
+      },
     ) => [
       row.id,
-      { timestamp: row.timestamp, created_at: row.created_at },
+      {
+        timestamp: row.timestamp,
+        webhook_index: row.webhook_index,
+        created_at: row.created_at,
+      },
     ]),
   );
   return sortMessageIdsForLunaOrder(messageIds, byId);
@@ -288,7 +315,7 @@ async function undeliveredMessageIdsFromBatch(
 
   const { data: messages } = await client
     .from("messages")
-    .select("id, status, timestamp, created_at")
+    .select("id, status, timestamp, webhook_index, created_at")
     .in("id", batch.message_ids)
     .throwOnError();
 
@@ -296,6 +323,7 @@ async function undeliveredMessageIdsFromBatch(
     id: string;
     status: MessageRow["status"];
     timestamp: string;
+    webhook_index?: number | null;
     created_at?: string | null;
   };
   const rows = (messages ?? []) as StatusRow[];
@@ -1043,6 +1071,7 @@ export async function buildLunaWhatsAppBatchPayload(
       .select()
       .in("id", batchMessageIds)
       .order("timestamp", { ascending: true })
+      .order("webhook_index", { ascending: true })
       .order("created_at", { ascending: true })
       .throwOnError(),
     client
@@ -1053,6 +1082,7 @@ export async function buildLunaWhatsAppBatchPayload(
       .eq("service", threadFilter.service)
       .gt("timestamp", since)
       .order("timestamp", { ascending: true })
+      .order("webhook_index", { ascending: true })
       .order("created_at", { ascending: true })
       .throwOnError(),
     client
@@ -1062,6 +1092,7 @@ export async function buildLunaWhatsAppBatchPayload(
       .eq("contact_address", threadFilter.contact_address)
       .eq("service", threadFilter.service)
       .order("timestamp", { ascending: false })
+      .order("webhook_index", { ascending: false })
       .order("created_at", { ascending: false })
       .limit(contextMaxMessages)
       .throwOnError(),
@@ -1354,7 +1385,7 @@ export async function absorbTimestampSiblingMessages(
       client
         .from("messages")
         .select(
-          "id, timestamp, created_at, direction, service, contact_address, content",
+          "id, timestamp, webhook_index, created_at, direction, service, contact_address, content",
         )
         .in("id", claimed.message_ids)
         .throwOnError(),
@@ -1414,7 +1445,7 @@ export async function absorbTimestampSiblingMessages(
   const { data: candidates } = await client
     .from("messages")
     .select(
-      "id, timestamp, created_at, direction, service, contact_address, content",
+      "id, timestamp, webhook_index, created_at, direction, service, contact_address, content",
     )
     .eq("organization_id", thread.organization_id)
     .eq("contact_address", thread.contact_address)
@@ -1425,9 +1456,15 @@ export async function absorbTimestampSiblingMessages(
     .throwOnError();
 
   const eligibleCandidates: SiblingAbsorbCandidate[] = [];
-  const createdAtById = new Map<string, string | null>();
+  const orderFieldsById = new Map<
+    string,
+    { webhook_index: number | null; created_at: string | null }
+  >();
   for (const row of batchMessages) {
-    createdAtById.set(row.id, row.created_at ?? null);
+    orderFieldsById.set(row.id, {
+      webhook_index: row.webhook_index ?? null,
+      created_at: row.created_at ?? null,
+    });
   }
   for (const row of candidates ?? []) {
     if (!shouldEnqueueLunaWhatsAppBatch(row as MessageRow)) continue;
@@ -1435,7 +1472,10 @@ export async function absorbTimestampSiblingMessages(
       id: row.id,
       created_at: row.created_at ?? null,
     });
-    createdAtById.set(row.id, row.created_at ?? null);
+    orderFieldsById.set(row.id, {
+      webhook_index: row.webhook_index ?? null,
+      created_at: row.created_at ?? null,
+    });
     if (row.timestamp) batchTimestampsById.set(row.id, row.timestamp);
   }
 
@@ -1452,7 +1492,11 @@ export async function absorbTimestampSiblingMessages(
   const orderMeta = new Map(
     [...batchTimestampsById.entries()].map(([id, timestamp]) => [
       id,
-      { timestamp, created_at: createdAtById.get(id) ?? null },
+      {
+        timestamp,
+        webhook_index: orderFieldsById.get(id)?.webhook_index ?? null,
+        created_at: orderFieldsById.get(id)?.created_at ?? null,
+      },
     ]),
   );
   const messageIds = sortMessageIdsForLunaOrder(absorbed, orderMeta);

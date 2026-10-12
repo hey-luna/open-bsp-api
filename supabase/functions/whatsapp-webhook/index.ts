@@ -709,7 +709,12 @@ async function processMessage(request: Request): Promise<Response> {
       if (
         (field === "messages" || field === "history") && "messages" in value
       ) {
-        for (const webhookMessage of value.messages ?? []) {
+        // Keep Meta array position — same-second timestamps need webhook_index
+        // so Luna batchParts can preserve payload order.
+        for (
+          const [webhookIndex, webhookMessage] of (value.messages ?? [])
+            .entries()
+        ) {
           // Payload-literal keying: prefer the phone number, fall back to the
           // BSUID (present only-phone-less for username users). The conversation
           // is created/looked up on this address and never re-keyed.
@@ -771,6 +776,7 @@ async function processMessage(request: Request): Promise<Response> {
             direction: "incoming" as const,
             content,
             timestamp: new Date(webhookMessage.timestamp * 1000).toISOString(),
+            webhook_index: webhookIndex,
           };
 
           messages.push(message);
@@ -826,7 +832,10 @@ async function processMessage(request: Request): Promise<Response> {
         (field === "smb_message_echoes" || field === "history") &&
         "message_echoes" in value
       ) {
-        for (const webhookMessage of value.message_echoes ?? []) {
+        for (
+          const [webhookIndex, webhookMessage] of (value.message_echoes ?? [])
+            .entries()
+        ) {
           const contact_address = webhookMessage.to ??
             webhookMessage.to_user_id;
 
@@ -888,6 +897,7 @@ async function processMessage(request: Request): Promise<Response> {
               sent: new Date(webhookMessage.timestamp * 1000).toISOString(),
             },
             timestamp: new Date(webhookMessage.timestamp * 1000).toISOString(),
+            webhook_index: webhookIndex,
           };
 
           messages.push(message);
@@ -943,7 +953,10 @@ async function processMessage(request: Request): Promise<Response> {
                 },
               });
 
-              for (const webhookMessage of thread.messages) {
+              for (
+                const [webhookIndex, webhookMessage] of thread.messages
+                  .entries()
+              ) {
                 // Echoes (business → user) carry a recipient; incoming messages
                 // (user → business) do not.
                 const isEcho = "to" in webhookMessage ||
@@ -1027,6 +1040,7 @@ async function processMessage(request: Request): Promise<Response> {
                     timestamp: new Date(
                       webhookMessage.timestamp * 1000,
                     ).toISOString(),
+                    webhook_index: webhookIndex,
                   }
                   : {
                     organization_id,
@@ -1046,6 +1060,7 @@ async function processMessage(request: Request): Promise<Response> {
                     timestamp: new Date(
                       webhookMessage.timestamp * 1000,
                     ).toISOString(),
+                    webhook_index: webhookIndex,
                   };
 
                 messages.push(message);

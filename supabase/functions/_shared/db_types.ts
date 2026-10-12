@@ -936,6 +936,7 @@ export type Database = {
           thread_id: string | null
           timestamp: string
           updated_at: string
+          webhook_index: number | null
         }
         Insert: {
           agent_id?: string | null
@@ -954,6 +955,7 @@ export type Database = {
           thread_id?: string | null
           timestamp?: string
           updated_at?: string
+          webhook_index?: number | null
         }
         Update: {
           agent_id?: string | null
@@ -972,6 +974,7 @@ export type Database = {
           thread_id?: string | null
           timestamp?: string
           updated_at?: string
+          webhook_index?: number | null
         }
         Relationships: [
           {

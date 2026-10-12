@@ -319,10 +319,28 @@ Deno.test("absorb: ignores candidate outside ±1s Meta window", () => {
 });
 
 Deno.test(
-  "luna order: same Meta second prefers created_at then enqueue index",
+  "luna order: same Meta second prefers webhook_index then created_at",
   () => {
     const ts = "2026-10-12T12:30:14.000Z";
-    // UUID lexicographic order would put msg-b before msg-a; enqueue says a then b.
+    // Meta payload order [class, b6] wins over enqueue / UUID / created_at.
+    const byWebhookIndex = sortMessageIdsForLunaOrder(
+      ["msg-b6", "msg-class"],
+      new Map([
+        ["msg-b6", {
+          timestamp: ts,
+          webhook_index: 1,
+          created_at: "2026-10-12T12:30:14.001Z",
+        }],
+        ["msg-class", {
+          timestamp: ts,
+          webhook_index: 0,
+          created_at: "2026-10-12T12:30:14.002Z",
+        }],
+      ]),
+    );
+    assertEquals(byWebhookIndex, ["msg-class", "msg-b6"]);
+
+    // Without webhook_index, enqueue order beats UUID lexicographic order.
     const rows = sortMessageRowsForLunaOrder(
       [
         {
@@ -355,16 +373,6 @@ Deno.test(
       ]),
     );
     assertEquals(byCreated, ["msg-class", "msg-b6"]);
-
-    // Distinct timestamps still win over enqueue / id order.
-    const byTs = sortMessageIdsForLunaOrder(
-      ["msg-b6", "msg-class"],
-      new Map([
-        ["msg-b6", { timestamp: "2026-10-12T12:30:14.001Z" }],
-        ["msg-class", { timestamp: "2026-10-12T12:30:14.000Z" }],
-      ]),
-    );
-    assertEquals(byTs, ["msg-class", "msg-b6"]);
   },
 );
 
