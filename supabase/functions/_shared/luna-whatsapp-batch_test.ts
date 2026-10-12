@@ -356,15 +356,15 @@ Deno.test(
     );
     assertEquals(byCreated, ["msg-class", "msg-b6"]);
 
-    // Indexed Meta ms (webhook disambiguation) sorts without needing created_at.
-    const byMs = sortMessageIdsForLunaOrder(
+    // Distinct timestamps still win over enqueue / id order.
+    const byTs = sortMessageIdsForLunaOrder(
       ["msg-b6", "msg-class"],
       new Map([
         ["msg-b6", { timestamp: "2026-10-12T12:30:14.001Z" }],
         ["msg-class", { timestamp: "2026-10-12T12:30:14.000Z" }],
       ]),
     );
-    assertEquals(byMs, ["msg-class", "msg-b6"]);
+    assertEquals(byTs, ["msg-class", "msg-b6"]);
   },
 );
 
