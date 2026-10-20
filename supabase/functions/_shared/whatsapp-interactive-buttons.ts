@@ -1,16 +1,11 @@
 import type { ButtonsMessageData, ReplyButton } from "./types/message_types.ts";
 import type {
   OutgoingCtaUrl,
-  OutgoingInteractiveButton,
   OutgoingReplyButtons,
 } from "./types/whatsapp_endpoint_types.ts";
 import { markdownToWhatsApp } from "./markdown.ts";
 
 export type OutgoingButtonsInteractive = OutgoingReplyButtons | OutgoingCtaUrl;
-
-const MAX_BUTTONS = 10;
-const MAX_WEBSITE_BUTTONS = 2;
-const MAX_SESSION_REPLY_BUTTONS = 3;
 
 function buttonKind(button: ReplyButton): "reply" | "website" {
   return button.type === "website" ? "website" : "reply";
@@ -22,18 +17,10 @@ function normalizeReplyButton(
   if (button.type === "website") {
     throw new Error("Expected reply button");
   }
-  const id = button.id?.trim() ?? "";
-  const title = button.title?.trim() ?? "";
-  if (!id || !title) {
-    throw new Error("Each reply button requires id and title");
-  }
-  if (title.length > 20) {
-    throw new Error("Reply button title cannot exceed 20 characters");
-  }
-  if (id.length > 256) {
-    throw new Error("Reply button id cannot exceed 256 characters");
-  }
-  return { id, title };
+  return {
+    id: button.id?.trim() ?? "",
+    title: button.title?.trim() ?? "",
+  };
 }
 
 function normalizeWebsiteButton(
@@ -42,19 +29,10 @@ function normalizeWebsiteButton(
   if (button.type !== "website") {
     throw new Error("Expected website button");
   }
-  const title = button.title?.trim() ?? "";
-  const url = button.url?.trim() ?? "";
-  if (!title || !url) {
-    throw new Error("Website button requires title and url");
-  }
-  if (title.length > 20) {
-    throw new Error("Website button title cannot exceed 20 characters");
-  }
-  if (url.length > 2000) {
-    throw new Error("Website button url cannot exceed 2000 characters");
-  }
-  assertHttpUrl(url);
-  return { title, url };
+  return {
+    title: button.title?.trim() ?? "",
+    url: button.url?.trim() ?? "",
+  };
 }
 
 function assertHttpUrl(url: string): void {
@@ -67,15 +45,6 @@ function assertHttpUrl(url: string): void {
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     throw new Error("Website button url must use http or https");
   }
-}
-
-function toOutgoingButton(button: ReplyButton): OutgoingInteractiveButton {
-  if (buttonKind(button) === "website") {
-    const { title, url } = normalizeWebsiteButton(button);
-    return { type: "cta_url", cta_url: { display_text: title, url } };
-  }
-  const { id, title } = normalizeReplyButton(button);
-  return { type: "reply", reply: { id, title } };
 }
 
 /** Builds WhatsApp Cloud API interactive payload for `content.kind: "buttons"`. */
@@ -100,25 +69,12 @@ export function buildOutgoingButtonsMessage(
   if (rawButtons.length === 0) {
     throw new Error("Button message requires at least one button");
   }
-  if (rawButtons.length > MAX_BUTTONS) {
-    throw new Error("Button message supports at most 10 buttons");
-  }
 
-  const websiteButtons = rawButtons.filter((button) =>
-    buttonKind(button) === "website"
-  );
-  const replyButtons = rawButtons.filter((button) =>
-    buttonKind(button) === "reply"
-  );
-  if (websiteButtons.length > MAX_WEBSITE_BUTTONS) {
-    throw new Error("Button message supports at most 2 website buttons");
-  }
-
-  const replyIds = replyButtons.map((button) =>
-    normalizeReplyButton(button).id
-  );
-  if (new Set(replyIds).size !== replyIds.length) {
-    throw new Error("Reply button ids must be unique");
+  const kinds = new Set(rawButtons.map(buttonKind));
+  if (kinds.size > 1) {
+    throw new Error(
+      "Button message cannot mix reply and website buttons in one message",
+    );
   }
 
   const bodyText = markdownToWhatsApp(body);
@@ -132,9 +88,22 @@ export function buildOutgoingButtonsMessage(
     ...(footer ? { footer: { text: footer } } : {}),
   };
 
-  // Session Cloud API: one URL button is interactive type cta_url.
-  if (websiteButtons.length === 1 && replyButtons.length === 0) {
-    const { title, url } = normalizeWebsiteButton(websiteButtons[0]);
+  if (kinds.has("website")) {
+    if (rawButtons.length !== 1) {
+      throw new Error("Website button message supports exactly one button");
+    }
+    const { title, url } = normalizeWebsiteButton(rawButtons[0]);
+    if (!title || !url) {
+      throw new Error("Website button requires title and url");
+    }
+    if (title.length > 20) {
+      throw new Error("Website button title cannot exceed 20 characters");
+    }
+    if (url.length > 2000) {
+      throw new Error("Website button url cannot exceed 2000 characters");
+    }
+    assertHttpUrl(url);
+
     return {
       type: "interactive",
       interactive: {
@@ -151,35 +120,34 @@ export function buildOutgoingButtonsMessage(
     };
   }
 
-  // Session Cloud API: 1–3 reply buttons, no category field.
-  if (
-    websiteButtons.length === 0 &&
-    replyButtons.length <= MAX_SESSION_REPLY_BUTTONS
-  ) {
-    return {
-      type: "interactive",
-      interactive: {
-        type: "button",
-        ...shared,
-        action: {
-          buttons: replyButtons.map(toOutgoingButton),
-        },
-      },
-    };
+  const buttons = rawButtons.map(normalizeReplyButton);
+  if (buttons.length < 1 || buttons.length > 3) {
+    throw new Error("Reply-button message requires 1–3 buttons");
+  }
+  if (buttons.some((button) => !button.id || !button.title)) {
+    throw new Error("Each reply button requires id and title");
+  }
+  if (buttons.some((button) => button.title.length > 20)) {
+    throw new Error("Reply button title cannot exceed 20 characters");
+  }
+  if (buttons.some((button) => button.id.length > 256)) {
+    throw new Error("Reply button id cannot exceed 256 characters");
+  }
+  const ids = buttons.map((button) => button.id);
+  if (new Set(ids).size !== ids.length) {
+    throw new Error("Reply button ids must be unique");
   }
 
-  // Direct Send on the same Cloud API POST /{phone-number-id}/messages.
-  // Without category, Meta treats this as a session message and rejects mixes.
-  // CTA URL buttons must be listed before reply buttons.
-  const ordered = [...websiteButtons, ...replyButtons];
   return {
     type: "interactive",
-    category: "utility",
     interactive: {
       type: "button",
       ...shared,
       action: {
-        buttons: ordered.map(toOutgoingButton),
+        buttons: buttons.map((button) => ({
+          type: "reply" as const,
+          reply: { id: button.id, title: button.title },
+        })),
       },
     },
   };
