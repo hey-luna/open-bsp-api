@@ -1,12 +1,11 @@
 name: Release
 
 on:
-  # GitHub Integration server-side bundling failed for media-header changes
-  # ("failed to bundle function: exit status 1"). Re-enable CLI deploy on
-  # main so edge functions still ship (Docker/local bundle via setup-cli).
-  push:
-    branches:
-      - main
+  # Using Supabase GitHub integration instead
+  #push:
+  #  branches:
+  #    - main
+  #    - develop
   workflow_dispatch:
 
 jobs:
