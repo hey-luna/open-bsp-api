@@ -81,7 +81,9 @@ export type {
 } from "./types/whatsapp_endpoint_types.ts";
 export { MediaTypes } from "./types/message_types.ts";
 export type {
+  ButtonsMediaRef,
   ButtonsMessageData,
+  ButtonsMessageHeader,
   DataPart,
   FilePart,
   FlowMessageData,

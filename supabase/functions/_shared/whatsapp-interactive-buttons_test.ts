@@ -66,3 +66,77 @@ Deno.test("buildOutgoingButtonsMessage: website requires single button", () => {
     "exactly one button",
   );
 });
+
+Deno.test("buildOutgoingButtonsMessage: string header stays text", () => {
+  const payload = buildOutgoingButtonsMessage({
+    body: "Body",
+    header: "Promo",
+    buttons: [{ type: "website", title: "Go", url: "https://example.com" }],
+  });
+  assertEquals(payload.interactive.header, { type: "text", text: "Promo" });
+});
+
+Deno.test("buildOutgoingButtonsMessage: video header object for cta_url", () => {
+  const payload = buildOutgoingButtonsMessage({
+    body: "Watch this",
+    header: {
+      type: "video",
+      video: { link: "https://cdn.example.com/clip.mp4" },
+    },
+    buttons: [{
+      type: "website",
+      title: "Learn more",
+      url: "https://example.com/promo",
+    }],
+  });
+  assertEquals(payload.interactive.type, "cta_url");
+  assertEquals(payload.interactive.header, {
+    type: "video",
+    video: { link: "https://cdn.example.com/clip.mp4" },
+  });
+});
+
+Deno.test("buildOutgoingButtonsMessage: image header object for reply buttons", () => {
+  const payload = buildOutgoingButtonsMessage({
+    body: "Choose",
+    header: {
+      type: "image",
+      image: { id: "MEDIA123" },
+    },
+    buttons: [{ id: "a", title: "A" }],
+  });
+  assertEquals(payload.interactive.type, "button");
+  assertEquals(payload.interactive.header, {
+    type: "image",
+    image: { id: "MEDIA123" },
+  });
+});
+
+Deno.test("buildOutgoingButtonsMessage: typed text header object", () => {
+  const payload = buildOutgoingButtonsMessage({
+    body: "Body",
+    header: { type: "text", text: "Headline" },
+    buttons: [{ id: "ok", title: "OK" }],
+  });
+  assertEquals(payload.interactive.header, {
+    type: "text",
+    text: "Headline",
+  });
+});
+
+Deno.test("buildOutgoingButtonsMessage: rejects empty media header", () => {
+  assertThrows(
+    () =>
+      buildOutgoingButtonsMessage({
+        body: "Body",
+        header: { type: "video", video: { link: "  " } },
+        buttons: [{
+          type: "website",
+          title: "Go",
+          url: "https://example.com",
+        }],
+      }),
+    Error,
+    "requires link or id",
+  );
+});
