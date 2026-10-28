@@ -14,7 +14,14 @@ import { downloadFromStorage } from "../_shared/media.ts";
 import { commitDispatchedMessage } from "../_shared/dispatch.ts";
 import { Json } from "../_shared/db_types.ts";
 import { markdownToWhatsApp } from "../_shared/markdown.ts";
-import { buildOutgoingButtonsMessage } from "../_shared/whatsapp-interactive-buttons.ts";
+import {
+  buildOutgoingButtonsMessage,
+  isInternalButtonsMediaRef,
+} from "../_shared/whatsapp-interactive-buttons.ts";
+import type {
+  ButtonsMediaRef,
+  ButtonsMessageData,
+} from "../_shared/types/message_types.ts";
 
 const API_VERSION = "v24.0";
 const DEFAULT_ACCESS_TOKEN = Deno.env.get("META_SYSTEM_USER_ACCESS_TOKEN") ||
@@ -143,30 +150,26 @@ function isExternalUri(uri: string): boolean {
   return uri.startsWith("http://") || uri.startsWith("https://");
 }
 
-async function uploadMediaItem({
-  message,
+const DEFAULT_MIME_BY_KIND: Record<string, string> = {
+  image: "image/jpeg",
+  video: "video/mp4",
+  document: "application/octet-stream",
+};
+
+async function uploadBlobToWhatsApp({
+  file,
+  mime_type,
+  kind,
+  phone_number_id,
   access_token,
-  client,
 }: {
-  message: MessageRow;
+  file: Blob;
+  mime_type: string;
+  kind: string;
+  phone_number_id: string;
   access_token: string;
-  client: SupabaseClient;
-}): Promise<MessageRow> {
-  if (message.content.type !== "file") {
-    return message;
-  }
-
-  // Skip upload for external URLs - they will be sent as 'link' instead of 'id'
-  if (isExternalUri(message.content.file.uri)) {
-    return message;
-  }
-
-  let file = await downloadFromStorage(client, message.content.file.uri);
-
-  // Validate file size against WhatsApp limits before uploading
-  const kind = message.content.kind;
+}): Promise<string> {
   const maxSize = WHATSAPP_MAX_FILE_SIZE[kind];
-
   if (maxSize && file.size > maxSize) {
     log.warn("File exceeds WhatsApp size limit", {
       kind,
@@ -180,20 +183,21 @@ async function uploadMediaItem({
     );
   }
 
-  let mime_type = message.content.file.mime_type;
+  let uploadFile = file;
+  let uploadMime = mime_type || file.type ||
+    DEFAULT_MIME_BY_KIND[kind] ||
+    "application/octet-stream";
 
   // make WA accept text/csv
-  if (mime_type.startsWith("text/")) {
-    mime_type = "text/plain";
-    file = new Blob([file], { type: "text/plain" });
+  if (uploadMime.startsWith("text/")) {
+    uploadMime = "text/plain";
+    uploadFile = new Blob([file], { type: "text/plain" });
   }
 
   const formData = new FormData();
-  formData.append("file", file);
-  formData.append("type", mime_type);
+  formData.append("file", uploadFile);
+  formData.append("type", uploadMime);
   formData.append("messaging_product", "whatsapp");
-
-  const phone_number_id = message.organization_address;
 
   const response = await fetch(
     `https://graph.facebook.com/${API_VERSION}/${phone_number_id}/media`,
@@ -211,8 +215,112 @@ async function uploadMediaItem({
   }
 
   const mediaMetadata = (await response.json()) as { id: string };
+  return mediaMetadata.id;
+}
 
-  message.content.file.uri = mediaMetadata.id;
+function buttonsHeaderMediaUri(ref: ButtonsMediaRef): string {
+  if ("link" in ref && typeof ref.link === "string") return ref.link;
+  if ("id" in ref && typeof ref.id === "string") return ref.id;
+  return "";
+}
+
+async function uploadButtonsHeaderMedia({
+  data,
+  access_token,
+  client,
+  phone_number_id,
+}: {
+  data: ButtonsMessageData;
+  access_token: string;
+  client: SupabaseClient;
+  phone_number_id: string;
+}): Promise<ButtonsMessageData> {
+  const header = data.header;
+  if (
+    header == null || typeof header === "string" || header.type === "text"
+  ) {
+    return data;
+  }
+
+  const kind = header.type;
+  const media = kind === "image"
+    ? header.image
+    : kind === "video"
+    ? header.video
+    : header.document;
+
+  if (!isInternalButtonsMediaRef(media)) {
+    return data;
+  }
+
+  const uri = buttonsHeaderMediaUri(media);
+  const file = await downloadFromStorage(client, uri);
+  const waId = await uploadBlobToWhatsApp({
+    file,
+    mime_type: file.type || DEFAULT_MIME_BY_KIND[kind] ||
+      "application/octet-stream",
+    kind,
+    phone_number_id,
+    access_token,
+  });
+
+  if (kind === "image") {
+    return { ...data, header: { type: "image", image: { id: waId } } };
+  }
+  if (kind === "video") {
+    return { ...data, header: { type: "video", video: { id: waId } } };
+  }
+  const filename = header.document.filename;
+  return {
+    ...data,
+    header: {
+      type: "document",
+      document: filename ? { id: waId, filename } : { id: waId },
+    },
+  };
+}
+
+async function uploadMediaItem({
+  message,
+  access_token,
+  client,
+}: {
+  message: MessageRow;
+  access_token: string;
+  client: SupabaseClient;
+}): Promise<MessageRow> {
+  if (
+    message.content.type === "data" && message.content.kind === "buttons"
+  ) {
+    const data = await uploadButtonsHeaderMedia({
+      data: message.content.data as ButtonsMessageData,
+      access_token,
+      client,
+      phone_number_id: message.organization_address,
+    });
+    message.content = { ...message.content, data };
+    return message;
+  }
+
+  if (message.content.type !== "file") {
+    return message;
+  }
+
+  // Skip upload for external URLs - they will be sent as 'link' instead of 'id'
+  if (isExternalUri(message.content.file.uri)) {
+    return message;
+  }
+
+  const file = await downloadFromStorage(client, message.content.file.uri);
+  const mediaId = await uploadBlobToWhatsApp({
+    file,
+    mime_type: message.content.file.mime_type,
+    kind: message.content.kind,
+    phone_number_id: message.organization_address,
+    access_token,
+  });
+
+  message.content.file.uri = mediaId;
 
   return message;
 }

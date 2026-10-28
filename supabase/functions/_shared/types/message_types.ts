@@ -203,9 +203,26 @@ export type ReplyButton =
     url: string;
   };
 
+/** Media ref for interactive headers — public URL or WhatsApp media id. */
+export type ButtonsMediaRef = { id: string } | { link: string };
+
+/**
+ * Button message header. String is text shorthand. Object form matches Meta
+ * Cloud API interactive headers (text / image / video / document).
+ */
+export type ButtonsMessageHeader =
+  | string
+  | { type: "text"; text: string }
+  | { type: "image"; image: ButtonsMediaRef }
+  | { type: "video"; video: ButtonsMediaRef }
+  | {
+    type: "document";
+    document: ButtonsMediaRef & { filename?: string };
+  };
+
 export type ButtonsMessageData = {
   body: string;
-  header?: string;
+  header?: ButtonsMessageHeader;
   footer?: string;
   buttons: ReplyButton[];
 };

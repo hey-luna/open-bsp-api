@@ -60,6 +60,20 @@ export type OutgoingSticker = {
   sticker: { id: string } | { link: string };
 };
 
+export type OutgoingInteractiveMediaRef =
+  | { id: string }
+  | { link: string };
+
+/** Header for interactive button / cta_url messages (Meta Cloud API). */
+export type OutgoingInteractiveHeader =
+  | { type: "text"; text: string }
+  | { type: "image"; image: OutgoingInteractiveMediaRef }
+  | { type: "video"; video: OutgoingInteractiveMediaRef }
+  | {
+    type: "document";
+    document: OutgoingInteractiveMediaRef & { filename?: string };
+  };
+
 export type OutgoingFlow = {
   type: "interactive";
   interactive: {
@@ -90,7 +104,7 @@ export type OutgoingReplyButtons = {
   type: "interactive";
   interactive: {
     type: "button";
-    header?: { type: "text"; text: string };
+    header?: OutgoingInteractiveHeader;
     body: { text: string };
     footer?: { text: string };
     action: {
@@ -106,7 +120,7 @@ export type OutgoingCtaUrl = {
   type: "interactive";
   interactive: {
     type: "cta_url";
-    header?: { type: "text"; text: string };
+    header?: OutgoingInteractiveHeader;
     body: { text: string };
     footer?: { text: string };
     action: {

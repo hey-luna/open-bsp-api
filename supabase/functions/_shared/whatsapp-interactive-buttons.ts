@@ -1,6 +1,12 @@
-import type { ButtonsMessageData, ReplyButton } from "./types/message_types.ts";
+import type {
+  ButtonsMediaRef,
+  ButtonsMessageData,
+  ButtonsMessageHeader,
+  ReplyButton,
+} from "./types/message_types.ts";
 import type {
   OutgoingCtaUrl,
+  OutgoingInteractiveHeader,
   OutgoingReplyButtons,
 } from "./types/whatsapp_endpoint_types.ts";
 import { markdownToWhatsApp } from "./markdown.ts";
@@ -47,6 +53,96 @@ function assertHttpUrl(url: string): void {
   }
 }
 
+function mediaRefUri(ref: ButtonsMediaRef): string {
+  if ("link" in ref && typeof ref.link === "string") return ref.link.trim();
+  if ("id" in ref && typeof ref.id === "string") return ref.id.trim();
+  return "";
+}
+
+function normalizeMediaRef(
+  ref: ButtonsMediaRef,
+  kind: "image" | "video" | "document",
+): ButtonsMediaRef {
+  if ("link" in ref && ref.link != null) {
+    const link = String(ref.link).trim();
+    if (!link) {
+      throw new Error(`Button message ${kind} header requires link or id`);
+    }
+    return { link };
+  }
+  if ("id" in ref && ref.id != null) {
+    const id = String(ref.id).trim();
+    if (!id) {
+      throw new Error(`Button message ${kind} header requires link or id`);
+    }
+    return { id };
+  }
+  throw new Error(`Button message ${kind} header requires link or id`);
+}
+
+/** Normalizes `data.header` into a Cloud API interactive header, or undefined. */
+export function buildOutgoingButtonsHeader(
+  header: ButtonsMessageHeader | undefined,
+): OutgoingInteractiveHeader | undefined {
+  if (header == null) return undefined;
+
+  if (typeof header === "string") {
+    const text = header.trim();
+    if (!text) return undefined;
+    if (text.length > 60) {
+      throw new Error("Button message header cannot exceed 60 characters");
+    }
+    return { type: "text", text };
+  }
+
+  if (typeof header !== "object" || !("type" in header)) {
+    throw new Error(
+      "Button message header must be a string or { type: text|image|video|document }",
+    );
+  }
+
+  switch (header.type) {
+    case "text": {
+      const text = header.text?.trim() ?? "";
+      if (!text) {
+        throw new Error("Button message text header requires text");
+      }
+      if (text.length > 60) {
+        throw new Error("Button message header cannot exceed 60 characters");
+      }
+      return { type: "text", text };
+    }
+    case "image":
+      return {
+        type: "image",
+        image: normalizeMediaRef(header.image, "image"),
+      };
+    case "video":
+      return {
+        type: "video",
+        video: normalizeMediaRef(header.video, "video"),
+      };
+    case "document": {
+      const document = normalizeMediaRef(header.document, "document");
+      const filename = header.document.filename?.trim();
+      return {
+        type: "document",
+        document: filename ? { ...document, filename } : document,
+      };
+    }
+    default:
+      throw new Error(
+        "Button message header type must be text, image, video, or document",
+      );
+  }
+}
+
+/** True when a buttons header media ref points at OpenBSP internal storage. */
+export function isInternalButtonsMediaRef(ref: ButtonsMediaRef): boolean {
+  const uri = mediaRefUri(ref);
+  return uri.startsWith("internal://media");
+}
+
 /** Builds WhatsApp Cloud API interactive payload for `content.kind: "buttons"`. */
 export function buildOutgoingButtonsMessage(
   data: ButtonsMessageData,
@@ -56,11 +152,7 @@ export function buildOutgoingButtonsMessage(
     throw new Error("Button message requires body");
   }
 
-  const header = data.header?.trim();
   const footer = data.footer?.trim();
-  if (header && header.length > 60) {
-    throw new Error("Button message header cannot exceed 60 characters");
-  }
   if (footer && footer.length > 60) {
     throw new Error("Button message footer cannot exceed 60 characters");
   }
@@ -82,8 +174,9 @@ export function buildOutgoingButtonsMessage(
     throw new Error("Button message body cannot exceed 1024 characters");
   }
 
+  const header = buildOutgoingButtonsHeader(data.header);
   const shared = {
-    ...(header ? { header: { type: "text" as const, text: header } } : {}),
+    ...(header ? { header } : {}),
     body: { text: bodyText },
     ...(footer ? { footer: { text: footer } } : {}),
   };
