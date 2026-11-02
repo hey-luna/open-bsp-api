@@ -35,6 +35,11 @@ create index luna_whatsapp_batches_organization_id_idx
 on public.luna_whatsapp_batches
 using btree (organization_id);
 
+-- Supports stale-flush reclaim: WHERE status = 'flushing' AND updated_at < $1
+create index luna_whatsapp_batches_status_updated_at_idx
+on public.luna_whatsapp_batches
+using btree (status, updated_at);
+
 create trigger set_updated_at
 before update on public.luna_whatsapp_batches
 for each row
