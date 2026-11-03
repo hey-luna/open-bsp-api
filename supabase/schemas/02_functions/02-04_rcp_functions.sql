@@ -16,22 +16,25 @@ declare
   _conversations json;
   _conversation_ids uuid[];
 begin
-  -- Windowed messages: up to p_per_conversation per conversation, total p_limit
-  with windowed as (
-    select m.*,
-      row_number() over (
-        partition by m.conversation_id
-        order by m.timestamp desc
-      ) as rn
-    from public.messages m
-    where m.organization_id = p_organization_id
-      and (p_since is null or m.timestamp > p_since)
-      and (p_until is null or m.timestamp < p_until)
-  ),
-  limited as (
-    select * from windowed
-    where rn <= p_per_conversation
-    order by timestamp desc
+  -- Same semantics as the prior window-function version (up to
+  -- p_per_conversation recent messages per conversation, then the global
+  -- p_limit most recent), but per-conversation LATERAL index lookups instead
+  -- of sorting the full org message set into temp files (Disk IO).
+  with limited as (
+    select m.*
+    from public.conversations c
+    cross join lateral (
+      select msg.*
+      from public.messages msg
+      where msg.conversation_id = c.id
+        and msg.organization_id = p_organization_id
+        and (p_since is null or msg.timestamp > p_since)
+        and (p_until is null or msg.timestamp < p_until)
+      order by msg.timestamp desc
+      limit p_per_conversation
+    ) m
+    where c.organization_id = p_organization_id
+    order by m.timestamp desc
     limit p_limit
   )
   select
