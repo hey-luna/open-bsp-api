@@ -2,8 +2,10 @@ import { assertEquals } from "jsr:@std/assert@1";
 import {
   batchPartKindFromMime,
   FORWARDED_DEBOUNCE_SECONDS,
+  lunaBatchMediaRefEnabled,
   lunaBatchPartFileKind,
   lunaFlowReplyFromContent,
+  lunaMediaRefFromFile,
   lunaWhatsAppBatchDebounceSecondsForMessage,
   openbspIdByExternalIdFromRows,
   planSiblingOpenBatchUpdates,
@@ -14,6 +16,7 @@ import {
   SIBLING_TIMESTAMP_WINDOW_MS,
   sortMessageIdsForLunaOrder,
   sortMessageRowsForLunaOrder,
+  storagePathFromInternalMediaUri,
 } from "./luna-whatsapp-batch.ts";
 import type { IncomingMessage, MessageRow } from "./supabase.ts";
 
@@ -483,3 +486,69 @@ Deno.test(
     assertEquals(replyToOpenbspIdFromMap(undefined, map), undefined);
   },
 );
+
+Deno.test("storagePathFromInternalMediaUri: strips internal://media/ prefix", () => {
+  const org = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+  const hash = "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-";
+  assertEquals(
+    storagePathFromInternalMediaUri(
+      `internal://media/organizations/${org}/attachments/${hash}`,
+    ),
+    `organizations/${org}/attachments/${hash}`,
+  );
+  // Leading slash after the scheme is normalized away.
+  assertEquals(
+    storagePathFromInternalMediaUri(
+      `internal://media//organizations/${org}/attachments/${hash}`,
+    ),
+    `organizations/${org}/attachments/${hash}`,
+  );
+  assertEquals(storagePathFromInternalMediaUri("wamid.media-id-only"), null);
+  assertEquals(storagePathFromInternalMediaUri("https://cdn.example/x"), null);
+});
+
+Deno.test("lunaMediaRefFromFile: builds media pointer from content.file", () => {
+  const org = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+  const hash = "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-";
+  const uri = `internal://media/organizations/${org}/attachments/${hash}`;
+  assertEquals(
+    lunaMediaRefFromFile({
+      uri,
+      mime_type: "application/pdf",
+      size: 8_388_608,
+      name: "invoice.pdf",
+    }),
+    {
+      uri,
+      mimeType: "application/pdf",
+      size: 8_388_608,
+      sha256: hash,
+      name: "invoice.pdf",
+    },
+  );
+  assertEquals(
+    lunaMediaRefFromFile({
+      uri: "1234567890", // WhatsApp media id — not yet uploaded
+      mime_type: "image/jpeg",
+      size: 0,
+    }),
+    null,
+  );
+});
+
+Deno.test("lunaBatchMediaRefEnabled: only when LUNA_BATCH_MEDIA_REF=1", () => {
+  const prev = Deno.env.get("LUNA_BATCH_MEDIA_REF");
+  try {
+    Deno.env.delete("LUNA_BATCH_MEDIA_REF");
+    assertEquals(lunaBatchMediaRefEnabled(), false);
+    Deno.env.set("LUNA_BATCH_MEDIA_REF", "0");
+    assertEquals(lunaBatchMediaRefEnabled(), false);
+    Deno.env.set("LUNA_BATCH_MEDIA_REF", "true");
+    assertEquals(lunaBatchMediaRefEnabled(), false);
+    Deno.env.set("LUNA_BATCH_MEDIA_REF", "1");
+    assertEquals(lunaBatchMediaRefEnabled(), true);
+  } finally {
+    if (prev === undefined) Deno.env.delete("LUNA_BATCH_MEDIA_REF");
+    else Deno.env.set("LUNA_BATCH_MEDIA_REF", prev);
+  }
+});
