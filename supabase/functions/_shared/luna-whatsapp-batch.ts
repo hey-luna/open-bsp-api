@@ -35,19 +35,16 @@ export type LunaContact = {
   }>;
 };
 
-/** Placeholder HTTPS URL while real Storage signing is disabled (RAM). */
-export const LUNA_MEDIA_SIGNED_URL_PLACEHOLDER =
-  "https://invalid.local/openbsp-media-unsigned";
-
 /**
  * Pointer to inbound file bytes for Luna batchParts.
  *
- * Temporary: `signedDownloadUrl` is a valid-looking placeholder URL (signing
- * disabled — caused severe edge RAM). Luna still receives `base64Data`.
- * Re-enable real signed URLs later once hydrate is safe.
+ * Signing is temporarily disabled (edge RAM). While disabled,
+ * `lunaMediaRefFromFile` returns null so we omit `media` entirely and Luna
+ * uses `base64Data` only — never send `signedDownloadUrl: ""` (Luna
+ * rejects empty strings as Invalid url).
  */
 export type LunaMediaRef = {
-  /** Placeholder HTTPS URL until signed-URL generation is re-enabled. */
+  /** Absolute https signed download URL (omit media when unavailable). */
   signedDownloadUrl: string;
   mimeType?: string;
   size?: number;
@@ -608,10 +605,19 @@ export function storagePathFromInternalMediaUri(uri: string): string | null {
   return path.length > 0 ? path : null;
 }
 
+/** True when a media ref has a Luna-acceptable absolute download URL. */
+export function lunaMediaRefHasUsableSignedUrl(
+  media: LunaMediaRef | null | undefined,
+): media is LunaMediaRef {
+  return !!media?.signedDownloadUrl?.startsWith("https://");
+}
+
 /**
- * Build a Luna `media` pointer. Signed URLs are temporarily a valid HTTPS
- * placeholder (no Storage signing) to avoid edge RAM pressure; Luna uses
- * `base64Data`.
+ * Build a Luna `media` pointer.
+ *
+ * Signing is temporarily disabled to avoid edge RAM pressure — return null
+ * so callers omit `media` and send `base64Data` only. Do not stub
+ * `signedDownloadUrl: ""` (Luna zod `.url()` → Invalid url).
  */
 export function lunaMediaRefFromFile(file: {
   uri: string;
@@ -619,16 +625,10 @@ export function lunaMediaRefFromFile(file: {
   size: number;
   name?: string;
 }): LunaMediaRef | null {
-  const path = storagePathFromInternalMediaUri(file.uri);
-  if (!path) return null;
-  const sha256 = path.split("/").filter(Boolean).pop();
-  return {
-    signedDownloadUrl: LUNA_MEDIA_SIGNED_URL_PLACEHOLDER,
-    mimeType: file.mime_type,
-    size: file.size,
-    ...(sha256 && { sha256 }),
-    ...(file.name && { name: file.name }),
-  };
+  // Signing disabled — omit media entirely until createSignedUrl is safe.
+  // Still require an internal media URI so WhatsApp media ids stay null.
+  if (!storagePathFromInternalMediaUri(file.uri)) return null;
+  return null;
 }
 
 function normalizeMessageRow(row: MessageRow): MessageRow {
@@ -1133,32 +1133,33 @@ async function messageToBatchPart(
   };
 
   const media = lunaMediaRefFromFile(content.file);
-  const omitBase64 = lunaBatchMediaRefEnabled() && media !== null;
+  const usableMedia = lunaMediaRefHasUsableSignedUrl(media) ? media : null;
+  const omitBase64 = lunaBatchMediaRefEnabled() && usableMedia !== null;
 
   if (omitBase64) {
-    // Phase 2: media ref + signed URL only.
-    return { ...base, kind: partKind, ...fileFields, media };
+    // Phase 2: media ref + signed URL only (never empty URL).
+    return { ...base, kind: partKind, ...fileFields, media: usableMedia };
   }
 
   const base64Data = await fileToBase64(client, content.file.uri);
   if (!base64Data) {
-    if (media) {
+    if (usableMedia) {
       log.warn(
         "Luna batch part missing base64; sending media ref only",
         { messageId: row.id, uri: content.file.uri },
       );
-      return { ...base, kind: partKind, ...fileFields, media };
+      return { ...base, kind: partKind, ...fileFields, media: usableMedia };
     }
     return null;
   }
 
-  // Phase 1 (everyone): dual-send media.signedDownloadUrl + base64Data.
+  // Phase 1: base64Data; attach media only when signed URL is a real https URL.
   return {
     ...base,
     kind: partKind,
     ...fileFields,
     base64Data,
-    ...(media && { media }),
+    ...(usableMedia && { media: usableMedia }),
   };
 }
 
