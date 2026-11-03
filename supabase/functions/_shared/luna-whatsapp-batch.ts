@@ -3,6 +3,10 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import ky from "ky";
 import * as log from "./logger.ts";
 import { createSignedUrl, downloadFromStorage } from "./media.ts";
+import {
+  alertLunaWhatsAppBatchFailure,
+  isLunaBatchJsonPoisonError,
+} from "./slack-alert.ts";
 import type {
   ButtonsMessageData,
   Database,
@@ -1734,6 +1738,17 @@ export async function flushLunaWhatsAppBatch(
       })
       .eq("id", batchId)
       .throwOnError();
+    alertLunaWhatsAppBatchFailure({
+      batchId,
+      contactAddress: claimed.contact_address,
+      organizationId: claimed.organization_id,
+      errorMessage: claimed.error_message || "Max flush attempts exceeded",
+      attemptCount: claimed.attempt_count,
+      messageCount: claimed.message_ids?.length ?? 0,
+      reason: isLunaBatchJsonPoisonError(claimed.error_message ?? "")
+        ? "json_poison"
+        : "max_attempts",
+    });
     return "skipped";
   }
 
@@ -1827,6 +1842,15 @@ export async function flushLunaWhatsAppBatch(
         })
         .eq("id", batchId)
         .throwOnError();
+      alertLunaWhatsAppBatchFailure({
+        batchId,
+        contactAddress: claimed.contact_address,
+        organizationId: claimed.organization_id,
+        errorMessage,
+        attemptCount: claimed.attempt_count + 1,
+        messageCount: absorbed.message_ids?.length ?? 0,
+        reason: "http_404",
+      });
     } else {
       await releaseFlushingBatchToOpenOrMerge(client, claimed, {
         attempt_count: claimed.attempt_count + 1,
@@ -1838,6 +1862,20 @@ export async function flushLunaWhatsAppBatch(
         error_message: errorMessage,
         flush_at: new Date(Date.now() + 30_000).toISOString(),
       });
+      // Page immediately on JSON poison — don't wait for max attempts.
+      if (
+        claimed.attempt_count === 0 && isLunaBatchJsonPoisonError(errorMessage)
+      ) {
+        alertLunaWhatsAppBatchFailure({
+          batchId,
+          contactAddress: claimed.contact_address,
+          organizationId: claimed.organization_id,
+          errorMessage,
+          attemptCount: claimed.attempt_count + 1,
+          messageCount: absorbed.message_ids?.length ?? 0,
+          reason: "json_poison",
+        });
+      }
     }
 
     log.warn("Luna WhatsApp batch flush failed", {
@@ -1853,6 +1891,17 @@ export async function flushLunaWhatsAppBatch(
       error_message: message,
       flush_at: new Date(Date.now() + 30_000).toISOString(),
     });
+    if (claimed.attempt_count === 0 && isLunaBatchJsonPoisonError(message)) {
+      alertLunaWhatsAppBatchFailure({
+        batchId,
+        contactAddress: claimed.contact_address,
+        organizationId: claimed.organization_id,
+        errorMessage: message,
+        attemptCount: claimed.attempt_count + 1,
+        messageCount: absorbed.message_ids?.length ?? 0,
+        reason: "json_poison",
+      });
+    }
     log.error("Luna WhatsApp batch flush error", { batchId, error: message });
     return "skipped";
   }
