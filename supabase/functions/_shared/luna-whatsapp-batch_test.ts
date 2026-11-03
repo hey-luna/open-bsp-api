@@ -12,11 +12,13 @@ import {
   replyToOpenbspIdFromMap,
   resolveAbsorbMessageIds,
   shouldEnqueueLunaWhatsAppBatch,
+  shouldInlineLunaMediaBytes,
   SIBLING_CREATED_WITHIN_MS,
   SIBLING_TIMESTAMP_WINDOW_MS,
   sortMessageIdsForLunaOrder,
   sortMessageRowsForLunaOrder,
   storagePathFromInternalMediaUri,
+  unsupportedVideoPlaceholderText,
 } from "./luna-whatsapp-batch.ts";
 import type { IncomingMessage, MessageRow } from "./supabase.ts";
 
@@ -551,4 +553,19 @@ Deno.test("lunaBatchMediaRefEnabled: only when LUNA_BATCH_MEDIA_REF=1", () => {
     if (prev === undefined) Deno.env.delete("LUNA_BATCH_MEDIA_REF");
     else Deno.env.set("LUNA_BATCH_MEDIA_REF", prev);
   }
+});
+
+Deno.test("video must never be inlined as Luna media bytes", () => {
+  assertEquals(shouldInlineLunaMediaBytes("video"), false);
+  assertEquals(shouldInlineLunaMediaBytes("image"), true);
+  assertEquals(shouldInlineLunaMediaBytes("audio"), true);
+  assertEquals(shouldInlineLunaMediaBytes("document"), true);
+});
+
+Deno.test("unsupported video placeholder keeps caption when present", () => {
+  assertEquals(unsupportedVideoPlaceholderText(), "[unsupported video]");
+  assertEquals(
+    unsupportedVideoPlaceholderText("  look at this  "),
+    "[unsupported video] look at this",
+  );
 });
