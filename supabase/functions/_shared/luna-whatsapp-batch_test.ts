@@ -2,11 +2,11 @@ import { assertEquals } from "jsr:@std/assert@1";
 import {
   batchPartKindFromMime,
   FORWARDED_DEBOUNCE_SECONDS,
-  LUNA_MEDIA_SIGNED_URL_PLACEHOLDER,
   lunaBatchMediaRefEnabled,
   lunaBatchPartFileKind,
   lunaFlowReplyFromContent,
   lunaMediaRefFromFile,
+  lunaMediaRefHasUsableSignedUrl,
   lunaWhatsAppBatchDebounceSecondsForMessage,
   openbspIdByExternalIdFromRows,
   planSiblingOpenBatchUpdates,
@@ -510,10 +510,11 @@ Deno.test("storagePathFromInternalMediaUri: strips internal://media/ prefix", ()
   assertEquals(storagePathFromInternalMediaUri("https://cdn.example/x"), null);
 });
 
-Deno.test("lunaMediaRefFromFile: stubs signedDownloadUrl as placeholder HTTPS URL", () => {
+Deno.test("lunaMediaRefFromFile: returns null while signing is disabled", () => {
   const org = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
   const hash = "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-";
   const uri = `internal://media/organizations/${org}/attachments/${hash}`;
+  // Omit media entirely — empty signedDownloadUrl would fail Luna url().
   assertEquals(
     lunaMediaRefFromFile({
       uri,
@@ -521,17 +522,7 @@ Deno.test("lunaMediaRefFromFile: stubs signedDownloadUrl as placeholder HTTPS UR
       size: 8_388_608,
       name: "invoice.pdf",
     }),
-    {
-      signedDownloadUrl: LUNA_MEDIA_SIGNED_URL_PLACEHOLDER,
-      mimeType: "application/pdf",
-      size: 8_388_608,
-      sha256: hash,
-      name: "invoice.pdf",
-    },
-  );
-  assertEquals(
-    URL.canParse(LUNA_MEDIA_SIGNED_URL_PLACEHOLDER),
-    true,
+    null,
   );
   assertEquals(
     lunaMediaRefFromFile({
@@ -540,6 +531,20 @@ Deno.test("lunaMediaRefFromFile: stubs signedDownloadUrl as placeholder HTTPS UR
       size: 0,
     }),
     null,
+  );
+});
+
+Deno.test("lunaMediaRefHasUsableSignedUrl: rejects empty stub URLs", () => {
+  assertEquals(lunaMediaRefHasUsableSignedUrl(null), false);
+  assertEquals(
+    lunaMediaRefHasUsableSignedUrl({ signedDownloadUrl: "" }),
+    false,
+  );
+  assertEquals(
+    lunaMediaRefHasUsableSignedUrl({
+      signedDownloadUrl: "https://example.supabase.co/storage/v1/object/sign/x",
+    }),
+    true,
   );
 });
 
