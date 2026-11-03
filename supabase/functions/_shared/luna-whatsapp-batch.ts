@@ -1133,8 +1133,8 @@ async function messageToBatchPart(
     text: content.text?.trim() || undefined,
   };
 
-  // Always inline base64 while signed URLs are stubbed placeholders.
-  // Do not omit base64 for a media-only part — Luna would have nothing to load.
+  // Base64 only until real signed URLs ship. A placeholder signedDownloadUrl
+  // made Luna try HTTPS first and miss base64Data entirely.
   const base64Data = await fileToBase64(client, content.file.uri);
   if (!base64Data) {
     log.warn("Skipping Luna batch part without base64Data", {
@@ -1144,13 +1144,11 @@ async function messageToBatchPart(
     return null;
   }
 
-  const media = lunaMediaRefFromFile(content.file);
   return {
     ...base,
     kind: partKind,
     ...fileFields,
     base64Data,
-    ...(media && { media }),
   };
 }
 
