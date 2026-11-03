@@ -2,7 +2,7 @@ import { encodeBase64 } from "jsr:@std/encoding/base64";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import ky from "ky";
 import * as log from "./logger.ts";
-import { downloadFromStorage } from "./media.ts";
+import { createSignedUrl, downloadFromStorage } from "./media.ts";
 import type {
   ButtonsMessageData,
   Database,
@@ -36,19 +36,22 @@ export type LunaContact = {
 };
 
 /**
- * Pointer to bytes in Supabase Storage (`media` bucket). Used on batchParts
- * when `LUNA_BATCH_MEDIA_REF=1` so the HTTP body stays small.
+ * Pointer to inbound file bytes for Luna batchParts.
  *
- * URI → object path: strip the `internal://media/` prefix, then any leading
- * `/`, yielding `organizations/{org_id}/attachments/{sha256}` where `{sha256}`
- * is the base64url SHA-256 content hash (same segment as in the storage key).
- * Luna should `storage.from("media").download(path)` with the project service
- * role (bypasses member RLS on `storage.objects`).
+ * Phase 1 (default): send `media.signedDownloadUrl` alongside `base64Data`
+ * so Luna can hydrate via HTTPS without open-bsp `service_role`. Phase 2
+ * (`LUNA_BATCH_MEDIA_REF=1`): omit `base64Data` once Luna confirms signed-URL
+ * hydrate. No internal `uri` — Luna must not need Storage service_role.
  */
 export type LunaMediaRef = {
-  uri: string;
-  mimeType: string;
-  size: number;
+  /**
+   * Supabase Storage signed HTTPS URL for the object in bucket `media`.
+   * TTL is at least 15 minutes (we use 1 hour) so Luna can fetch async
+   * after the batch POST returns.
+   */
+  signedDownloadUrl: string;
+  mimeType?: string;
+  size?: number;
   /** Content hash segment from the storage path (base64url SHA-256). */
   sha256?: string;
   name?: string;
@@ -89,16 +92,10 @@ export type LunaRecentMessage = {
   response?: Record<string, unknown>;
   mimeType?: string;
   /**
-   * Legacy inline bytes. Omitted entirely when `LUNA_BATCH_MEDIA_REF=1`
-   * (recentMessages stay metadata-only). When the flag is off, may be `null`
-   * for `batch_only` / non-quoted media.
+   * Legacy inline bytes. recentMessages unchanged in phase 1 (may be `null`
+   * for `batch_only` / non-quoted media). No signed URLs here yet.
    */
   base64Data?: string | null;
-  /**
-   * Storage pointer. Not used on recentMessages under `batch_only` (bytes live
-   * only on `batchParts` once media-ref mode is on).
-   */
-  media?: LunaMediaRef;
   fileName?: string;
   /** WhatsApp message id (WAMID) this message replies to, when present. */
   replyToId?: string;
@@ -142,13 +139,13 @@ export type LunaBatchPart = {
   response?: Record<string, unknown>;
   mimeType?: string;
   /**
-   * Legacy inline bytes. Sent when `LUNA_BATCH_MEDIA_REF` is off; omitted when
-   * the flag is on and `media` is set (do not send both).
+   * Legacy inline bytes. Always sent in phase 1 (dual-send with `media`).
+   * Omitted only when `LUNA_BATCH_MEDIA_REF=1` (phase 2) and `media` is set.
    */
   base64Data?: string;
   /**
-   * Supabase Storage pointer for inbound file bytes. Set when
-   * `LUNA_BATCH_MEDIA_REF=1`; Luna loads via service role on bucket `media`.
+   * Signed download URL (+ optional Storage metadata) for inbound file bytes.
+   * Always set on image/audio/document batchParts when signing succeeds.
    */
   media?: LunaMediaRef;
   fileName?: string;
@@ -594,13 +591,17 @@ export function normalizeSenderPhone(contactAddress: string): string {
 }
 
 /**
- * Phase-2 flag: send Storage `media` refs on batchParts and omit `base64Data`.
- * Keep off until Luna phase 1 (accepts `media` + still accepts base64) is in
- * prod. Set edge secret `LUNA_BATCH_MEDIA_REF=1` to enable.
+ * Phase-2 flag: omit `base64Data` on batchParts when `media` is present.
+ * Phase 1 (default, flag off) dual-sends `media` (with signed URL) + base64.
+ * Set edge secret `LUNA_BATCH_MEDIA_REF=1` only after Luna confirms signed-URL
+ * hydrate.
  */
 export function lunaBatchMediaRefEnabled(): boolean {
   return Deno.env.get("LUNA_BATCH_MEDIA_REF") === "1";
 }
+
+/** Signed URL TTL for Luna batch media (≥ 15 minutes; 1h for async hydrate). */
+export const LUNA_MEDIA_SIGNED_URL_TTL_SECONDS = 60 * 60;
 
 /**
  * Map an OpenBSP internal media URI to the Storage object path in bucket
@@ -613,23 +614,43 @@ export function storagePathFromInternalMediaUri(uri: string): string | null {
   return path.length > 0 ? path : null;
 }
 
-/** Build a Luna `media` pointer from OpenBSP `content.file` fields. */
-export function lunaMediaRefFromFile(file: {
-  uri: string;
-  mime_type: string;
-  size: number;
-  name?: string;
-}): LunaMediaRef | null {
+/**
+ * Build a Luna `media` pointer with a Storage signed download URL.
+ * Returns null when the URI is not an internal media object, or signing fails
+ * (caller still sends `base64Data` as fallback).
+ */
+export async function lunaMediaRefFromFile(
+  client: SupabaseClient<Database>,
+  file: {
+    uri: string;
+    mime_type: string;
+    size: number;
+    name?: string;
+  },
+): Promise<LunaMediaRef | null> {
   const path = storagePathFromInternalMediaUri(file.uri);
   if (!path) return null;
   const sha256 = path.split("/").filter(Boolean).pop();
-  return {
-    uri: file.uri,
-    mimeType: file.mime_type,
-    size: file.size,
-    ...(sha256 && { sha256 }),
-    ...(file.name && { name: file.name }),
-  };
+  try {
+    const signedDownloadUrl = await createSignedUrl(
+      client,
+      file.uri,
+      LUNA_MEDIA_SIGNED_URL_TTL_SECONDS,
+    );
+    return {
+      signedDownloadUrl,
+      mimeType: file.mime_type,
+      size: file.size,
+      ...(sha256 && { sha256 }),
+      ...(file.name && { name: file.name }),
+    };
+  } catch (error) {
+    log.warn("Failed to sign media URL for Luna WhatsApp batch", {
+      uri: file.uri,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
 }
 
 function normalizeMessageRow(row: MessageRow): MessageRow {
@@ -1035,11 +1056,7 @@ async function messageToLunaRecent(
       mimeType,
       fileName: content.file.name,
     };
-    // Media-ref mode: recentMessages stay metadata-only (no base64 / no media
-    // blob). Bytes are only on batchParts via `media.uri`.
-    if (lunaBatchMediaRefEnabled()) {
-      return recent;
-    }
+    // Phase 1: recentMessages unchanged — no media refs / signed URLs here.
     // Never inline video bytes — a single large video pulled in via
     // reply-context previously blew up every later flush for the contact
     // (~10MB JSON parse failures on Luna).
@@ -1137,27 +1154,33 @@ async function messageToBatchPart(
     text: content.text?.trim() || undefined,
   };
 
-  if (lunaBatchMediaRefEnabled()) {
-    const media = lunaMediaRefFromFile(content.file);
-    if (!media) {
-      log.warn("Skipping Luna batch part without internal media uri", {
-        messageId: row.id,
-        uri: content.file.uri,
-      });
-      return null;
-    }
-    // Omit base64Data entirely — Luna loads bytes from Storage via media.uri.
+  const media = await lunaMediaRefFromFile(client, content.file);
+  const omitBase64 = lunaBatchMediaRefEnabled() && media !== null;
+
+  if (omitBase64) {
+    // Phase 2: media ref + signed URL only.
     return { ...base, kind: partKind, ...fileFields, media };
   }
 
   const base64Data = await fileToBase64(client, content.file.uri);
-  if (!base64Data) return null;
+  if (!base64Data) {
+    if (media) {
+      log.warn(
+        "Luna batch part missing base64; sending media ref only",
+        { messageId: row.id, uri: content.file.uri },
+      );
+      return { ...base, kind: partKind, ...fileFields, media };
+    }
+    return null;
+  }
 
+  // Phase 1 (everyone): dual-send media.signedDownloadUrl + base64Data.
   return {
     ...base,
     kind: partKind,
     ...fileFields,
     base64Data,
+    ...(media && { media }),
   };
 }
 
@@ -1282,9 +1305,9 @@ export async function buildLunaWhatsAppBatchPayload(
     ...orderedRecentRows,
   ]);
 
-  // Legacy (flag off): include media bytes for quoted messages (in-window or
-  // fetched), so Luna can resolve image/audio/doc quotes under batch_only.
-  // With LUNA_BATCH_MEDIA_REF=1, recentMessages stay metadata-only regardless.
+  // Include media bytes for quoted messages (in-window or fetched), so Luna
+  // can resolve image/audio/doc quotes under batch_only. Phase 1 leaves
+  // recentMessages without signed URLs / media refs.
   const includeMediaInRecent = policy.includeMedia === "all_in_window";
   const recent = (await Promise.all(
     orderedRecentRows.map((message) =>
