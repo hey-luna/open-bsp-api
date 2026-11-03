@@ -90,6 +90,11 @@ create index messages_org_conv_timestamp_idx
 on public.messages
 using btree (organization_id, conversation_id, timestamp desc);
 
+-- Supports polling by org + direction + time (agent / UI catch-up queries).
+create index messages_org_direction_timestamp_idx
+on public.messages
+using btree (organization_id, direction, timestamp desc);
+
 create trigger handle_new_message
 before insert
 on public.messages
