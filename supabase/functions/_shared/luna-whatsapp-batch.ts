@@ -2,7 +2,7 @@ import { encodeBase64 } from "jsr:@std/encoding/base64";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import ky from "ky";
 import * as log from "./logger.ts";
-import { createSignedUrl, downloadFromStorage } from "./media.ts";
+import { downloadFromStorage } from "./media.ts";
 import type {
   ButtonsMessageData,
   Database,
@@ -38,17 +38,12 @@ export type LunaContact = {
 /**
  * Pointer to inbound file bytes for Luna batchParts.
  *
- * Phase 1 (default): send `media.signedDownloadUrl` alongside `base64Data`
- * so Luna can hydrate via HTTPS without open-bsp `service_role`. Phase 2
- * (`LUNA_BATCH_MEDIA_REF=1`): omit `base64Data` once Luna confirms signed-URL
- * hydrate. No internal `uri` — Luna must not need Storage service_role.
+ * Temporary: `signedDownloadUrl` is always `""` (signing disabled — caused
+ * severe edge RAM). Luna still receives `base64Data`. Re-enable real signed
+ * URLs later once hydrate is safe.
  */
 export type LunaMediaRef = {
-  /**
-   * Supabase Storage signed HTTPS URL for the object in bucket `media`.
-   * TTL is at least 15 minutes (we use 1 hour) so Luna can fetch async
-   * after the batch POST returns.
-   */
+  /** Empty string until signed-URL generation is re-enabled. */
   signedDownloadUrl: string;
   mimeType?: string;
   size?: number;
@@ -592,16 +587,11 @@ export function normalizeSenderPhone(contactAddress: string): string {
 
 /**
  * Phase-2 flag: omit `base64Data` on batchParts when `media` is present.
- * Phase 1 (default, flag off) dual-sends `media` (with signed URL) + base64.
- * Set edge secret `LUNA_BATCH_MEDIA_REF=1` only after Luna confirms signed-URL
- * hydrate.
+ * Keep off while signed URLs are stubbed empty and base64 is the real path.
  */
 export function lunaBatchMediaRefEnabled(): boolean {
   return Deno.env.get("LUNA_BATCH_MEDIA_REF") === "1";
 }
-
-/** Signed URL TTL for Luna batch media (≥ 15 minutes; 1h for async hydrate). */
-export const LUNA_MEDIA_SIGNED_URL_TTL_SECONDS = 60 * 60;
 
 /**
  * Map an OpenBSP internal media URI to the Storage object path in bucket
@@ -615,42 +605,25 @@ export function storagePathFromInternalMediaUri(uri: string): string | null {
 }
 
 /**
- * Build a Luna `media` pointer with a Storage signed download URL.
- * Returns null when the URI is not an internal media object, or signing fails
- * (caller still sends `base64Data` as fallback).
+ * Build a Luna `media` pointer. Signed URLs are temporarily stubbed as `""`
+ * to avoid edge RAM pressure; Luna uses `base64Data`.
  */
-export async function lunaMediaRefFromFile(
-  client: SupabaseClient<Database>,
-  file: {
-    uri: string;
-    mime_type: string;
-    size: number;
-    name?: string;
-  },
-): Promise<LunaMediaRef | null> {
+export function lunaMediaRefFromFile(file: {
+  uri: string;
+  mime_type: string;
+  size: number;
+  name?: string;
+}): LunaMediaRef | null {
   const path = storagePathFromInternalMediaUri(file.uri);
   if (!path) return null;
   const sha256 = path.split("/").filter(Boolean).pop();
-  try {
-    const signedDownloadUrl = await createSignedUrl(
-      client,
-      file.uri,
-      LUNA_MEDIA_SIGNED_URL_TTL_SECONDS,
-    );
-    return {
-      signedDownloadUrl,
-      mimeType: file.mime_type,
-      size: file.size,
-      ...(sha256 && { sha256 }),
-      ...(file.name && { name: file.name }),
-    };
-  } catch (error) {
-    log.warn("Failed to sign media URL for Luna WhatsApp batch", {
-      uri: file.uri,
-      error: error instanceof Error ? error.message : String(error),
-    });
-    return null;
-  }
+  return {
+    signedDownloadUrl: "",
+    mimeType: file.mime_type,
+    size: file.size,
+    ...(sha256 && { sha256 }),
+    ...(file.name && { name: file.name }),
+  };
 }
 
 function normalizeMessageRow(row: MessageRow): MessageRow {
@@ -1154,7 +1127,7 @@ async function messageToBatchPart(
     text: content.text?.trim() || undefined,
   };
 
-  const media = await lunaMediaRefFromFile(client, content.file);
+  const media = lunaMediaRefFromFile(content.file);
   const omitBase64 = lunaBatchMediaRefEnabled() && media !== null;
 
   if (omitBase64) {
