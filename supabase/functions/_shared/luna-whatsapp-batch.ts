@@ -1309,9 +1309,14 @@ export async function buildLunaWhatsAppBatchPayload(
   }
 
   const sortedIds = [...batchMessageIds].sort();
-  const idempotencyKey = `${input.batch.organization_id}:${
+  const computedIdempotencyKey = `${input.batch.organization_id}:${
     normalizeSenderPhone(input.batch.contact_address)
   }:${sortedIds.join(",")}`;
+  // One-shot replays: pre-set `idempotency_key` on the open batch to
+  // `resend:<nonce>:…` so Luna does not treat the POST as a duplicate.
+  const idempotencyKey = input.batch.idempotency_key?.startsWith("resend:")
+    ? input.batch.idempotency_key
+    : computedIdempotencyKey;
 
   return {
     idempotencyKey,
