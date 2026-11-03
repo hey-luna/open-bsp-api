@@ -193,6 +193,20 @@ const MAX_FLUSH_ATTEMPTS = 5;
 const STALE_FLUSHING_MS = 5 * 60 * 1000;
 const SUPPORTED_FILE_KINDS = new Set(["audio", "image", "document", "video"]);
 
+/** Luna batchParts has no video kind — stub so the event still reaches Luna. */
+export function unsupportedVideoPlaceholderText(
+  caption?: string | null,
+): string {
+  const stub = "[unsupported video]";
+  const trimmed = caption?.trim();
+  return trimmed ? `${stub} ${trimmed}` : stub;
+}
+
+/** Video bytes must never be inlined — they poison reply-context batches. */
+export function shouldInlineLunaMediaBytes(kind: string): boolean {
+  return kind !== "video";
+}
+
 /** Luna marks inbound messages read/typing when it starts handling a batch. */
 function messageLikelyDeliveredToLuna(
   status: MessageRow["status"],
@@ -1032,16 +1046,22 @@ async function messageToLunaRecent(
         content.kind === "document" || content.kind === "video"
       ? content.kind
       : lunaKindFromFileMime(mimeType);
+    const text = kind === "video" && !content.text?.trim()
+      ? unsupportedVideoPlaceholderText()
+      : content.text;
     const recent: LunaRecentMessage = {
       ...base,
       kind,
-      text: content.text,
+      text,
       mimeType,
       fileName: content.file.name,
     };
     // Phase 1: recentMessages unchanged — no media refs / signed URLs here.
+    // Never inline video bytes — a single large video pulled in via
+    // reply-context previously blew up every later flush for the contact
+    // (~10MB JSON parse failures on Luna).
     let base64Data: string | null = null;
-    if (opts.includeMedia) {
+    if (opts.includeMedia && shouldInlineLunaMediaBytes(kind)) {
       base64Data = await fileToBase64(client, content.file.uri);
     }
     return { ...recent, base64Data };
@@ -1113,6 +1133,16 @@ async function messageToBatchPart(
 
   if (content.type !== "file" || !SUPPORTED_FILE_KINDS.has(content.kind)) {
     return null;
+  }
+
+  // Video is not a Luna batchParts file kind. Stub as text so Luna still sees
+  // the inbound event instead of an emptyBatch skip that drops the turn.
+  if (!shouldInlineLunaMediaBytes(content.kind)) {
+    return {
+      ...base,
+      kind: "text",
+      text: unsupportedVideoPlaceholderText(content.text),
+    };
   }
 
   const partKind = lunaBatchPartFileKind(content.kind, content.file.mime_type);
