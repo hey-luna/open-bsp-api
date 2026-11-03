@@ -590,8 +590,9 @@ export function normalizeSenderPhone(contactAddress: string): string {
 }
 
 /**
- * Phase-2 flag: omit `base64Data` on batchParts when `media` is present.
- * Keep off while signed URLs are stubbed empty and base64 is the real path.
+ * Reserved for phase 2 (omit base64 once real signed URLs work). Currently
+ * unused on the flush path — we always send `base64Data` while signed URLs
+ * are placeholders.
  */
 export function lunaBatchMediaRefEnabled(): boolean {
   return Deno.env.get("LUNA_BATCH_MEDIA_REF") === "1";
@@ -1132,27 +1133,18 @@ async function messageToBatchPart(
     text: content.text?.trim() || undefined,
   };
 
-  const media = lunaMediaRefFromFile(content.file);
-  const omitBase64 = lunaBatchMediaRefEnabled() && media !== null;
-
-  if (omitBase64) {
-    // Phase 2: media ref + signed URL only.
-    return { ...base, kind: partKind, ...fileFields, media };
-  }
-
+  // Always inline base64 while signed URLs are stubbed placeholders.
+  // Do not omit base64 for a media-only part — Luna would have nothing to load.
   const base64Data = await fileToBase64(client, content.file.uri);
   if (!base64Data) {
-    if (media) {
-      log.warn(
-        "Luna batch part missing base64; sending media ref only",
-        { messageId: row.id, uri: content.file.uri },
-      );
-      return { ...base, kind: partKind, ...fileFields, media };
-    }
+    log.warn("Skipping Luna batch part without base64Data", {
+      messageId: row.id,
+      uri: content.file.uri,
+    });
     return null;
   }
 
-  // Phase 1 (everyone): dual-send media.signedDownloadUrl + base64Data.
+  const media = lunaMediaRefFromFile(content.file);
   return {
     ...base,
     kind: partKind,
