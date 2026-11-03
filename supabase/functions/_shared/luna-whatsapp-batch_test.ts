@@ -1,6 +1,7 @@
 import { assertEquals } from "jsr:@std/assert@1";
 import {
   batchPartKindFromMime,
+  exceedsLunaMediaByteCap,
   FORWARDED_DEBOUNCE_SECONDS,
   LUNA_MEDIA_SIGNED_URL_PLACEHOLDER,
   lunaBatchMediaRefEnabled,
@@ -8,6 +9,7 @@ import {
   lunaFlowReplyFromContent,
   lunaMediaRefFromFile,
   lunaWhatsAppBatchDebounceSecondsForMessage,
+  MAX_LUNA_MEDIA_BYTES,
   openbspIdByExternalIdFromRows,
   planSiblingOpenBatchUpdates,
   replyToOpenbspIdFromMap,
@@ -19,6 +21,7 @@ import {
   sortMessageIdsForLunaOrder,
   sortMessageRowsForLunaOrder,
   storagePathFromInternalMediaUri,
+  unsupportedOversizedMediaPlaceholderText,
   unsupportedVideoPlaceholderText,
 } from "./luna-whatsapp-batch.ts";
 import type { IncomingMessage, MessageRow } from "./supabase.ts";
@@ -572,5 +575,22 @@ Deno.test("unsupported video placeholder keeps caption when present", () => {
   assertEquals(
     unsupportedVideoPlaceholderText("  look at this  "),
     "[unsupported video] look at this",
+  );
+});
+
+Deno.test("Luna media byte cap is 5MB exclusive", () => {
+  assertEquals(MAX_LUNA_MEDIA_BYTES, 5 * 1024 * 1024);
+  assertEquals(exceedsLunaMediaByteCap(MAX_LUNA_MEDIA_BYTES), false);
+  assertEquals(exceedsLunaMediaByteCap(MAX_LUNA_MEDIA_BYTES + 1), true);
+});
+
+Deno.test("unsupported oversized media placeholder keeps caption", () => {
+  assertEquals(
+    unsupportedOversizedMediaPlaceholderText(),
+    "[unsupported: exceeded size more than 5MB]",
+  );
+  assertEquals(
+    unsupportedOversizedMediaPlaceholderText("  look at this  "),
+    "[unsupported: exceeded size more than 5MB] look at this",
   );
 });

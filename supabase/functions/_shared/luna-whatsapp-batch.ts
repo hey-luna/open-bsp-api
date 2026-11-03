@@ -192,6 +192,9 @@ const MAX_FLUSH_ATTEMPTS = 5;
 const STALE_FLUSHING_MS = 5 * 60 * 1000;
 const SUPPORTED_FILE_KINDS = new Set(["audio", "image", "document", "video"]);
 
+/** Cap inlined Luna media so one file cannot melt flush / Luna JSON parse. */
+export const MAX_LUNA_MEDIA_BYTES = 5 * 1024 * 1024;
+
 /** Luna batchParts has no video kind — stub so the event still reaches Luna. */
 export function unsupportedVideoPlaceholderText(
   caption?: string | null,
@@ -199,6 +202,19 @@ export function unsupportedVideoPlaceholderText(
   const stub = "[unsupported video]";
   const trimmed = caption?.trim();
   return trimmed ? `${stub} ${trimmed}` : stub;
+}
+
+/** Oversized image/audio/document — stub as text instead of huge base64. */
+export function unsupportedOversizedMediaPlaceholderText(
+  caption?: string | null,
+): string {
+  const stub = "[unsupported: exceeded size more than 5MB]";
+  const trimmed = caption?.trim();
+  return trimmed ? `${stub} ${trimmed}` : stub;
+}
+
+export function exceedsLunaMediaByteCap(size: number): boolean {
+  return size > MAX_LUNA_MEDIA_BYTES;
 }
 
 /** Video bytes must never be inlined — they poison reply-context batches. */
@@ -1025,8 +1041,11 @@ async function messageToLunaRecent(
         content.kind === "document" || content.kind === "video"
       ? content.kind
       : lunaKindFromFileMime(mimeType);
+    const oversized = exceedsLunaMediaByteCap(content.file.size);
     const text = kind === "video" && !content.text?.trim()
       ? unsupportedVideoPlaceholderText()
+      : oversized && !content.text?.trim()
+      ? unsupportedOversizedMediaPlaceholderText()
       : content.text;
     const recent: LunaRecentMessage = {
       ...base,
@@ -1038,9 +1057,11 @@ async function messageToLunaRecent(
     // Phase 1: recentMessages unchanged — no media refs / signed URLs here.
     // Never inline video bytes — a single large video pulled in via
     // reply-context previously blew up every later flush for the contact
-    // (~10MB JSON parse failures on Luna).
+    // (~10MB JSON parse failures on Luna). Also skip >5MB files.
     let base64Data: string | null = null;
-    if (opts.includeMedia && shouldInlineLunaMediaBytes(kind)) {
+    if (
+      opts.includeMedia && shouldInlineLunaMediaBytes(kind) && !oversized
+    ) {
       base64Data = await fileToBase64(client, content.file.uri);
     }
     return { ...recent, base64Data };
@@ -1121,6 +1142,15 @@ async function messageToBatchPart(
       ...base,
       kind: "text",
       text: unsupportedVideoPlaceholderText(content.text),
+    };
+  }
+
+  // Cap inlined bytes — oversized media becomes a text stub (no base64 download).
+  if (exceedsLunaMediaByteCap(content.file.size)) {
+    return {
+      ...base,
+      kind: "text",
+      text: unsupportedOversizedMediaPlaceholderText(content.text),
     };
   }
 
