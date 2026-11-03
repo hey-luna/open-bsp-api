@@ -2,6 +2,7 @@ import { assertEquals } from "jsr:@std/assert@1";
 import {
   batchPartKindFromMime,
   FORWARDED_DEBOUNCE_SECONDS,
+  LUNA_MEDIA_SIGNED_URL_PLACEHOLDER,
   lunaBatchMediaRefEnabled,
   lunaBatchPartFileKind,
   lunaFlowReplyFromContent,
@@ -509,7 +510,7 @@ Deno.test("storagePathFromInternalMediaUri: strips internal://media/ prefix", ()
   assertEquals(storagePathFromInternalMediaUri("https://cdn.example/x"), null);
 });
 
-Deno.test("lunaMediaRefFromFile: stubs signedDownloadUrl as empty string", () => {
+Deno.test("lunaMediaRefFromFile: stubs signedDownloadUrl as placeholder HTTPS URL", () => {
   const org = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
   const hash = "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-";
   const uri = `internal://media/organizations/${org}/attachments/${hash}`;
@@ -521,12 +522,16 @@ Deno.test("lunaMediaRefFromFile: stubs signedDownloadUrl as empty string", () =>
       name: "invoice.pdf",
     }),
     {
-      signedDownloadUrl: "",
+      signedDownloadUrl: LUNA_MEDIA_SIGNED_URL_PLACEHOLDER,
       mimeType: "application/pdf",
       size: 8_388_608,
       sha256: hash,
       name: "invoice.pdf",
     },
+  );
+  assertEquals(
+    URL.canParse(LUNA_MEDIA_SIGNED_URL_PLACEHOLDER),
+    true,
   );
   assertEquals(
     lunaMediaRefFromFile({
