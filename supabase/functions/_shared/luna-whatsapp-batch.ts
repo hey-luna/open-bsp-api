@@ -38,16 +38,12 @@ export type LunaContact = {
 /**
  * Pointer to inbound file bytes for Luna batchParts.
  *
- * Phase 1 (default): send `media` + `signedDownloadUrl` alongside `base64Data`
+ * Phase 1 (default): send `media.signedDownloadUrl` alongside `base64Data`
  * so Luna can hydrate via HTTPS without open-bsp `service_role`. Phase 2
  * (`LUNA_BATCH_MEDIA_REF=1`): omit `base64Data` once Luna confirms signed-URL
- * hydrate.
- *
- * URI → object path: strip `internal://media/`, then leading `/`, yielding
- * `organizations/{org_id}/attachments/{sha256}`.
+ * hydrate. No internal `uri` — Luna must not need Storage service_role.
  */
 export type LunaMediaRef = {
-  uri: string;
   /**
    * Supabase Storage signed HTTPS URL for the object in bucket `media`.
    * TTL is at least 15 minutes (we use 1 hour) so Luna can fetch async
@@ -148,8 +144,8 @@ export type LunaBatchPart = {
    */
   base64Data?: string;
   /**
-   * Storage pointer + signed download URL for inbound file bytes. Always set
-   * on image/audio/document batchParts when the object is in Storage.
+   * Signed download URL (+ optional Storage metadata) for inbound file bytes.
+   * Always set on image/audio/document batchParts when signing succeeds.
    */
   media?: LunaMediaRef;
   fileName?: string;
@@ -628,7 +624,6 @@ export async function lunaMediaRefFromFile(
       LUNA_MEDIA_SIGNED_URL_TTL_SECONDS,
     );
     return {
-      uri: file.uri,
       signedDownloadUrl,
       mimeType: file.mime_type,
       size: file.size,
@@ -1149,7 +1144,7 @@ async function messageToBatchPart(
     return null;
   }
 
-  // Phase 1 (everyone): dual-send media (uri + signedDownloadUrl) + base64Data.
+  // Phase 1 (everyone): dual-send media.signedDownloadUrl + base64Data.
   return {
     ...base,
     kind: partKind,

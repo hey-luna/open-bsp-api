@@ -544,7 +544,6 @@ Deno.test(
         name: "invoice.pdf",
       }),
       {
-        uri,
         signedDownloadUrl: signed,
         mimeType: "application/pdf",
         size: 8_388_608,
