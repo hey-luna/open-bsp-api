@@ -195,6 +195,28 @@ export const RECENTLY_SENT_LOOKBACK_MS = 60_000;
 const MAX_FLUSH_ATTEMPTS = 5;
 const STALE_FLUSHING_MS = 5 * 60 * 1000;
 const SUPPORTED_FILE_KINDS = new Set(["audio", "image", "document", "video"]);
+/**
+ * Raw media byte cap for Luna base64 payloads. Base64 expands ~4/3; Luna has
+ * failed parsing requests around ~10MB JSON (unterminated-string flush errors).
+ * Oversized files are stubbed as `[unsupported …]` text so later messages for
+ * the same contact still flush.
+ */
+export const MAX_LUNA_MEDIA_BYTES = 3 * 1024 * 1024;
+
+/** Luna batchParts has no video kind — stub so the event still reaches Luna. */
+export function unsupportedMediaPlaceholderText(
+  kind: string,
+  caption?: string | null,
+): string {
+  const stub = `[unsupported ${kind}]`;
+  const trimmed = caption?.trim();
+  return trimmed ? `${stub} ${trimmed}` : stub;
+}
+
+/** Video bytes must never be inlined — they poison reply-context batches. */
+export function shouldInlineLunaMediaBytes(kind: string): boolean {
+  return kind !== "video";
+}
 
 /** Luna marks inbound messages read/typing when it starts handling a batch. */
 function messageLikelyDeliveredToLuna(
@@ -665,10 +687,20 @@ export function lunaBatchPartFileKind(
 async function fileToBase64(
   client: SupabaseClient<Database>,
   uri: string,
+  opts?: { maxBytes?: number },
 ): Promise<string | null> {
   if (!uri.startsWith("internal://media/")) return null;
+  const maxBytes = opts?.maxBytes ?? MAX_LUNA_MEDIA_BYTES;
   try {
     const blob = await downloadFromStorage(client, uri);
+    if (blob.size > maxBytes) {
+      log.warn("Skipping oversized media for Luna WhatsApp batch", {
+        uri,
+        size: blob.size,
+        maxBytes,
+      });
+      return null;
+    }
     const buffer = await blob.arrayBuffer();
     return encodeBase64(new Uint8Array(buffer));
   } catch (error) {
@@ -1011,10 +1043,13 @@ async function messageToLunaRecent(
         content.kind === "document" || content.kind === "video"
       ? content.kind
       : lunaKindFromFileMime(mimeType);
+    const text = kind === "video" && !content.text?.trim()
+      ? unsupportedMediaPlaceholderText("video")
+      : content.text;
     const recent: LunaRecentMessage = {
       ...base,
       kind,
-      text: content.text,
+      text,
       mimeType,
       fileName: content.file.name,
     };
@@ -1023,8 +1058,11 @@ async function messageToLunaRecent(
     if (lunaBatchMediaRefEnabled()) {
       return recent;
     }
+    // Never inline video bytes — a single large video pulled in via
+    // reply-context previously blew up every later flush for the contact
+    // (~10MB JSON parse failures on Luna).
     let base64Data: string | null = null;
-    if (opts.includeMedia) {
+    if (opts.includeMedia && shouldInlineLunaMediaBytes(kind)) {
       base64Data = await fileToBase64(client, content.file.uri);
     }
     return { ...recent, base64Data };
@@ -1098,8 +1136,24 @@ async function messageToBatchPart(
     return null;
   }
 
+  // Video is not a Luna batchParts file kind. Stub as text so Luna still sees
+  // the inbound event instead of an emptyBatch skip that drops the turn.
+  if (!shouldInlineLunaMediaBytes(content.kind)) {
+    return {
+      ...base,
+      kind: "text",
+      text: unsupportedMediaPlaceholderText(content.kind, content.text),
+    };
+  }
+
   const partKind = lunaBatchPartFileKind(content.kind, content.file.mime_type);
-  if (!partKind) return null;
+  if (!partKind) {
+    return {
+      ...base,
+      kind: "text",
+      text: unsupportedMediaPlaceholderText(content.kind, content.text),
+    };
+  }
 
   const fileFields = {
     mimeType: content.file.mime_type,
@@ -1110,18 +1164,29 @@ async function messageToBatchPart(
   if (lunaBatchMediaRefEnabled()) {
     const media = lunaMediaRefFromFile(content.file);
     if (!media) {
-      log.warn("Skipping Luna batch part without internal media uri", {
+      log.warn("Stubbing Luna batch part without internal media uri", {
         messageId: row.id,
         uri: content.file.uri,
       });
-      return null;
+      return {
+        ...base,
+        kind: "text",
+        text: unsupportedMediaPlaceholderText(partKind, content.text),
+      };
     }
     // Omit base64Data entirely — Luna loads bytes from Storage via media.uri.
     return { ...base, kind: partKind, ...fileFields, media };
   }
 
   const base64Data = await fileToBase64(client, content.file.uri);
-  if (!base64Data) return null;
+  if (!base64Data) {
+    // Missing/oversized media must not drop the rest of the contact's pipeline.
+    return {
+      ...base,
+      kind: "text",
+      text: unsupportedMediaPlaceholderText(partKind, content.text),
+    };
+  }
 
   return {
     ...base,
