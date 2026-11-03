@@ -2,6 +2,7 @@ import { assertEquals } from "jsr:@std/assert@1";
 import {
   batchPartKindFromMime,
   FORWARDED_DEBOUNCE_SECONDS,
+  LUNA_MEDIA_SIGNED_URL_TTL_SECONDS,
   lunaBatchMediaRefEnabled,
   lunaBatchPartFileKind,
   lunaFlowReplyFromContent,
@@ -507,36 +508,62 @@ Deno.test("storagePathFromInternalMediaUri: strips internal://media/ prefix", ()
   assertEquals(storagePathFromInternalMediaUri("https://cdn.example/x"), null);
 });
 
-Deno.test("lunaMediaRefFromFile: builds media pointer from content.file", () => {
-  const org = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
-  const hash = "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-";
-  const uri = `internal://media/organizations/${org}/attachments/${hash}`;
-  assertEquals(
-    lunaMediaRefFromFile({
-      uri,
-      mime_type: "application/pdf",
-      size: 8_388_608,
-      name: "invoice.pdf",
-    }),
-    {
-      uri,
-      mimeType: "application/pdf",
-      size: 8_388_608,
-      sha256: hash,
-      name: "invoice.pdf",
-    },
-  );
-  assertEquals(
-    lunaMediaRefFromFile({
-      uri: "1234567890", // WhatsApp media id — not yet uploaded
-      mime_type: "image/jpeg",
-      size: 0,
-    }),
-    null,
-  );
-});
+Deno.test(
+  "lunaMediaRefFromFile: builds media pointer with signed download URL",
+  async () => {
+    const org = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+    const hash = "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-";
+    const uri = `internal://media/organizations/${org}/attachments/${hash}`;
+    const signed =
+      "https://tmjczmxmmdsgjxdgpdan.supabase.co/storage/v1/object/sign/media/organizations/x?token=t";
+    const client = {
+      storage: {
+        from(bucket: string) {
+          assertEquals(bucket, "media");
+          return {
+            createSignedUrl(path: string, expiresIn: number) {
+              assertEquals(
+                path,
+                `organizations/${org}/attachments/${hash}`,
+              );
+              assertEquals(expiresIn, LUNA_MEDIA_SIGNED_URL_TTL_SECONDS);
+              return Promise.resolve({
+                data: { signedUrl: signed },
+                error: null,
+              });
+            },
+          };
+        },
+      },
+    };
+    assertEquals(
+      await lunaMediaRefFromFile(client as never, {
+        uri,
+        mime_type: "application/pdf",
+        size: 8_388_608,
+        name: "invoice.pdf",
+      }),
+      {
+        uri,
+        signedDownloadUrl: signed,
+        mimeType: "application/pdf",
+        size: 8_388_608,
+        sha256: hash,
+        name: "invoice.pdf",
+      },
+    );
+    assertEquals(
+      await lunaMediaRefFromFile(client as never, {
+        uri: "1234567890", // WhatsApp media id — not yet uploaded
+        mime_type: "image/jpeg",
+        size: 0,
+      }),
+      null,
+    );
+  },
+);
 
-Deno.test("lunaBatchMediaRefEnabled: only when LUNA_BATCH_MEDIA_REF=1", () => {
+Deno.test("lunaBatchMediaRefEnabled: phase-2 omit-base64 when LUNA_BATCH_MEDIA_REF=1", () => {
   const prev = Deno.env.get("LUNA_BATCH_MEDIA_REF");
   try {
     Deno.env.delete("LUNA_BATCH_MEDIA_REF");
