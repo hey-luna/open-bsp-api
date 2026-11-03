@@ -509,10 +509,11 @@ Deno.test("storagePathFromInternalMediaUri: strips internal://media/ prefix", ()
   assertEquals(storagePathFromInternalMediaUri("https://cdn.example/x"), null);
 });
 
-Deno.test("lunaMediaRefFromFile: stubs signedDownloadUrl as empty string", () => {
+Deno.test("lunaMediaRefFromFile: returns null while signing is disabled", () => {
   const org = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
   const hash = "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-";
   const uri = `internal://media/organizations/${org}/attachments/${hash}`;
+  // Empty signedDownloadUrl 422s at Luna; omit media until signing is back.
   assertEquals(
     lunaMediaRefFromFile({
       uri,
@@ -520,13 +521,7 @@ Deno.test("lunaMediaRefFromFile: stubs signedDownloadUrl as empty string", () =>
       size: 8_388_608,
       name: "invoice.pdf",
     }),
-    {
-      signedDownloadUrl: "",
-      mimeType: "application/pdf",
-      size: 8_388_608,
-      sha256: hash,
-      name: "invoice.pdf",
-    },
+    null,
   );
   assertEquals(
     lunaMediaRefFromFile({

@@ -38,12 +38,12 @@ export type LunaContact = {
 /**
  * Pointer to inbound file bytes for Luna batchParts.
  *
- * Temporary: `signedDownloadUrl` is always `""` (signing disabled — caused
- * severe edge RAM). Luna still receives `base64Data`. Re-enable real signed
- * URLs later once hydrate is safe.
+ * Signing is temporarily disabled (severe edge RAM). Do not attach `media`
+ * with an empty `signedDownloadUrl` — Luna validates it as a URL and rejects
+ * `""`. While signing is off, batchParts carry `base64Data` only.
  */
 export type LunaMediaRef = {
-  /** Empty string until signed-URL generation is re-enabled. */
+  /** HTTPS signed Storage URL. Never send an empty string. */
   signedDownloadUrl: string;
   mimeType?: string;
   size?: number;
@@ -605,8 +605,11 @@ export function storagePathFromInternalMediaUri(uri: string): string | null {
 }
 
 /**
- * Build a Luna `media` pointer. Signed URLs are temporarily stubbed as `""`
- * to avoid edge RAM pressure; Luna uses `base64Data`.
+ * Build a Luna `media` pointer.
+ *
+ * Returns null while signed-URL generation is disabled: attaching
+ * `signedDownloadUrl: ""` makes Luna 422 (`Invalid url`). Callers must send
+ * `base64Data` instead. Re-enable by returning a real HTTPS signed URL.
  */
 export function lunaMediaRefFromFile(file: {
   uri: string;
@@ -616,14 +619,10 @@ export function lunaMediaRefFromFile(file: {
 }): LunaMediaRef | null {
   const path = storagePathFromInternalMediaUri(file.uri);
   if (!path) return null;
-  const sha256 = path.split("/").filter(Boolean).pop();
-  return {
-    signedDownloadUrl: "",
-    mimeType: file.mime_type,
-    size: file.size,
-    ...(sha256 && { sha256 }),
-    ...(file.name && { name: file.name }),
-  };
+  // Signing disabled — omit media entirely (empty URL fails Luna zod).
+  // When re-enabled: createSignedUrl on `path`, return
+  // { signedDownloadUrl, mimeType: file.mime_type, size: file.size, ... }.
+  return null;
 }
 
 function normalizeMessageRow(row: MessageRow): MessageRow {
@@ -1147,13 +1146,14 @@ async function messageToBatchPart(
     return null;
   }
 
-  // Phase 1 (everyone): dual-send media.signedDownloadUrl + base64Data.
+  // Phase 1: base64Data. Attach media only when a real signed URL exists
+  // (never dual-send with signedDownloadUrl: "" — Luna rejects it).
   return {
     ...base,
     kind: partKind,
     ...fileFields,
     base64Data,
-    ...(media && { media }),
+    ...(media?.signedDownloadUrl ? { media } : {}),
   };
 }
 
