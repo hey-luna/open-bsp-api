@@ -7,7 +7,6 @@ import {
   lunaFlowReplyFromContent,
   lunaMediaRefFromFile,
   lunaWhatsAppBatchDebounceSecondsForMessage,
-  MAX_LUNA_MEDIA_BYTES,
   openbspIdByExternalIdFromRows,
   planSiblingOpenBatchUpdates,
   replyToOpenbspIdFromMap,
@@ -19,7 +18,7 @@ import {
   sortMessageIdsForLunaOrder,
   sortMessageRowsForLunaOrder,
   storagePathFromInternalMediaUri,
-  unsupportedMediaPlaceholderText,
+  unsupportedVideoPlaceholderText,
 } from "./luna-whatsapp-batch.ts";
 import type { IncomingMessage, MessageRow } from "./supabase.ts";
 
@@ -561,20 +560,12 @@ Deno.test("video must never be inlined as Luna media bytes", () => {
   assertEquals(shouldInlineLunaMediaBytes("image"), true);
   assertEquals(shouldInlineLunaMediaBytes("audio"), true);
   assertEquals(shouldInlineLunaMediaBytes("document"), true);
-  assertEquals(MAX_LUNA_MEDIA_BYTES, 3 * 1024 * 1024);
 });
 
-Deno.test("unsupported media placeholder keeps caption when present", () => {
+Deno.test("unsupported video placeholder keeps caption when present", () => {
+  assertEquals(unsupportedVideoPlaceholderText(), "[unsupported video]");
   assertEquals(
-    unsupportedMediaPlaceholderText("video"),
-    "[unsupported video]",
-  );
-  assertEquals(
-    unsupportedMediaPlaceholderText("video", "  look at this  "),
+    unsupportedVideoPlaceholderText("  look at this  "),
     "[unsupported video] look at this",
-  );
-  assertEquals(
-    unsupportedMediaPlaceholderText("image", null),
-    "[unsupported image]",
   );
 });
