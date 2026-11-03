@@ -35,15 +35,19 @@ export type LunaContact = {
   }>;
 };
 
+/** Placeholder HTTPS URL while real Storage signing is disabled (RAM). */
+export const LUNA_MEDIA_SIGNED_URL_PLACEHOLDER =
+  "https://invalid.local/openbsp-media-unsigned";
+
 /**
  * Pointer to inbound file bytes for Luna batchParts.
  *
- * Temporary: `signedDownloadUrl` is always `""` (signing disabled — caused
- * severe edge RAM). Luna still receives `base64Data`. Re-enable real signed
- * URLs later once hydrate is safe.
+ * Temporary: `signedDownloadUrl` is a valid-looking placeholder URL (signing
+ * disabled — caused severe edge RAM). Luna still receives `base64Data`.
+ * Re-enable real signed URLs later once hydrate is safe.
  */
 export type LunaMediaRef = {
-  /** Empty string until signed-URL generation is re-enabled. */
+  /** Placeholder HTTPS URL until signed-URL generation is re-enabled. */
   signedDownloadUrl: string;
   mimeType?: string;
   size?: number;
@@ -605,8 +609,9 @@ export function storagePathFromInternalMediaUri(uri: string): string | null {
 }
 
 /**
- * Build a Luna `media` pointer. Signed URLs are temporarily stubbed as `""`
- * to avoid edge RAM pressure; Luna uses `base64Data`.
+ * Build a Luna `media` pointer. Signed URLs are temporarily a valid HTTPS
+ * placeholder (no Storage signing) to avoid edge RAM pressure; Luna uses
+ * `base64Data`.
  */
 export function lunaMediaRefFromFile(file: {
   uri: string;
@@ -618,7 +623,7 @@ export function lunaMediaRefFromFile(file: {
   if (!path) return null;
   const sha256 = path.split("/").filter(Boolean).pop();
   return {
-    signedDownloadUrl: "",
+    signedDownloadUrl: LUNA_MEDIA_SIGNED_URL_PLACEHOLDER,
     mimeType: file.mime_type,
     size: file.size,
     ...(sha256 && { sha256 }),
