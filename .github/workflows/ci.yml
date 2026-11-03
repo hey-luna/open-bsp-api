@@ -40,4 +40,11 @@ jobs:
               ../config.toml | sort -u
           )
           exit "$fail"
+      # Match Integration migration gate: every remote schema_migrations version
+      # must exist as a file under supabase/migrations/ (PR #38 failure mode).
+      - name: Migration history matches remote
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_PROJECT_ID: ${{ vars.SUPABASE_PROJECT_ID }}
+        run: bash scripts/check-migrations.sh
       - run: cd plugin && deno lint && deno check .
