@@ -2,6 +2,7 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import * as log from "../_shared/logger.ts";
 import {
   buildLunaOutboundStatusPayload,
+  lunaOutboundStatusConfigured,
   sendLunaOutboundStatus,
   shouldNotifyLunaOutboundStatus,
 } from "../_shared/luna-outbound-status.ts";
@@ -22,6 +23,12 @@ Deno.serve(async (req) => {
   const token = authHeader?.replace(/^Bearer\s+/i, "");
   if (token !== SERVICE_ROLE_KEY) {
     return new Response("Unauthorized", { status: 401 });
+  }
+
+  // Cheap exit before JSON work when Luna callback is not wired.
+  const config = lunaOutboundStatusConfigured();
+  if (!config) {
+    return new Response("Skipped", { status: 200 });
   }
 
   let body: WebhookPayload<MessageRow>;
@@ -46,10 +53,7 @@ Deno.serve(async (req) => {
   const payload = buildLunaOutboundStatusPayload(message, status);
 
   try {
-    const result = await sendLunaOutboundStatus(payload);
-    if (!result) {
-      return new Response("Skipped", { status: 200 });
-    }
+    const result = await sendLunaOutboundStatus(payload, config);
 
     if (result.status >= 400) {
       log.error("Luna outbound status callback failed", {

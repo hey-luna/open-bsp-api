@@ -16,7 +16,9 @@ export type LunaOutboundStatusError = {
 };
 
 export type LunaOutboundStatusPayload = {
+  /** OpenBSP `messages.id` — Luna stores this as `provider_message_id`. */
   provider_message_id: string;
+  /** Meta WAMID when known (`messages.external_id`). */
   wamid?: string;
   status: LunaOutboundStatus;
   timestamp: string;
@@ -26,16 +28,29 @@ export type LunaOutboundStatusPayload = {
   organization_id: string;
 };
 
-const STATUS_PRIORITY: LunaOutboundStatus[] = [
+/** Prefer failed over read over delivered when several keys flip at once. */
+const STATUS_PRIORITY: readonly LunaOutboundStatus[] = [
   "failed",
   "read",
   "delivered",
 ];
 
-export function isLunaOutboundStatus(
-  value: string,
-): value is LunaOutboundStatus {
-  return (LUNA_OUTBOUND_STATUS_VALUES as readonly string[]).includes(value);
+const LUNA_OUTBOUND_STATUS_TIMEOUT_MS = 8_000;
+
+export function lunaOutboundStatusConfigured(): {
+  url: string;
+  secret: string;
+} | null {
+  const url = Deno.env.get("LUNA_OUTBOUND_STATUS_URL")?.trim();
+  const secret = Deno.env.get("LUNA_WEBHOOK_SECRET")?.trim();
+  if (url && secret) return { url, secret };
+  if (url || secret) {
+    log.warn("Luna outbound status misconfigured (need URL and secret)", {
+      hasUrl: Boolean(url),
+      hasSecret: Boolean(secret),
+    });
+  }
+  return null;
 }
 
 /** Newly set delivered / failed / read keys vs previous status. */
@@ -55,10 +70,6 @@ export function newlySetOutboundStatuses(
   return out;
 }
 
-/**
- * One status per notify: prefer failed, then read, then delivered when
- * multiple keys appear in the same merge (unusual, but safe).
- */
 export function pickPrimaryOutboundStatus(
   statuses: LunaOutboundStatus[],
 ): LunaOutboundStatus | null {
@@ -88,6 +99,18 @@ export function templateNameFromContent(content: unknown): string | undefined {
   return typeof name === "string" && name.length > 0 ? name : undefined;
 }
 
+function pushError(
+  out: LunaOutboundStatusError[],
+  code: number | undefined,
+  title: string | undefined,
+): void {
+  if (code == null && !title) return;
+  out.push({
+    ...(code != null && { code }),
+    ...(title && { title }),
+  });
+}
+
 /**
  * Normalize Meta webhook errors and Cloud API / dispatcher error envelopes
  * into `{ code, title }` for Luna.
@@ -104,12 +127,11 @@ export function normalizeOutboundStatusErrors(
 
     // WebhookError: { code, title, message, error_data }
     if (typeof e.code === "number" || typeof e.title === "string") {
-      out.push({
-        ...(typeof e.code === "number" && { code: e.code }),
-        ...(typeof e.title === "string" && e.title.length > 0 && {
-          title: e.title,
-        }),
-      });
+      pushError(
+        out,
+        typeof e.code === "number" ? e.code : undefined,
+        typeof e.title === "string" && e.title.length > 0 ? e.title : undefined,
+      );
       continue;
     }
 
@@ -125,12 +147,7 @@ export function normalizeOutboundStatusErrors(
         : typeof err.type === "string"
         ? err.type
         : undefined;
-      if (code != null || title) {
-        out.push({
-          ...(code != null && { code }),
-          ...(title && { title }),
-        });
-      }
+      pushError(out, code, title);
     }
   }
 
@@ -162,21 +179,12 @@ export function buildLunaOutboundStatusPayload(
 
 export async function sendLunaOutboundStatus(
   payload: LunaOutboundStatusPayload,
-): Promise<{ status: number; body: unknown } | null> {
-  const url = Deno.env.get("LUNA_OUTBOUND_STATUS_URL");
-  const secret = Deno.env.get("LUNA_WEBHOOK_SECRET");
-  if (!url || !secret) {
-    log.info("Luna outbound status skipped (URL or secret unset)", {
-      providerMessageId: payload.provider_message_id,
-      status: payload.status,
-    });
-    return null;
-  }
-
-  const response = await ky.post(url, {
+  config: { url: string; secret: string },
+): Promise<{ status: number; body: unknown }> {
+  const response = await ky.post(config.url, {
     json: payload,
-    headers: { Authorization: `Bearer ${secret}` },
-    timeout: 15_000,
+    headers: { Authorization: `Bearer ${config.secret}` },
+    timeout: LUNA_OUTBOUND_STATUS_TIMEOUT_MS,
     throwHttpErrors: false,
   });
 

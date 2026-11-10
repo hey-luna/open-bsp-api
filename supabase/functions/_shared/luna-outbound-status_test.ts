@@ -122,6 +122,7 @@ Deno.test("normalizeOutboundStatusErrors handles webhook + graph shapes", () => 
           message: "Template unavailable",
         },
       },
+      { title: "" },
     ]),
     [
       { code: 131049, title: "This message was not delivered" },
