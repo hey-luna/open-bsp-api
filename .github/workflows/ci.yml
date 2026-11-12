@@ -18,4 +18,26 @@ jobs:
       - run: deno fmt --check
       - run: cd supabase/functions && deno lint && deno check .
       - run: cd supabase/functions && deno test --allow-env _shared/luna-whatsapp-batch_test.ts _shared/whatsapp-interactive-buttons_test.ts _shared/whatsapp-interactive-carousel_test.ts
+      # Match Supabase GitHub Integration: it runs `deno bundle --frozen` per
+      # function. `deno check` can pass with a stale/incomplete deno.lock.
+      - name: Frozen-bundle edge function entrypoints
+        run: |
+          set -euo pipefail
+          cd supabase/functions
+          mkdir -p /tmp/fn-bundles
+          fail=0
+          while IFS= read -r rel; do
+            name="${rel%%/*}"
+            echo "::group::bundle $name ($rel)"
+            if ! deno bundle --import-map=deno.json --frozen "$rel" \
+              -o "/tmp/fn-bundles/${name}.js"; then
+              echo "::error::frozen bundle failed for $name — same failure mode as Supabase Deploy Functions (exit 10)"
+              fail=1
+            fi
+            echo "::endgroup::"
+          done < <(
+            sed -n 's/^entrypoint *= *"\.\/functions\/\(.*\)"/\1/p' \
+              ../config.toml | sort -u
+          )
+          exit "$fail"
       - run: cd plugin && deno lint && deno check .

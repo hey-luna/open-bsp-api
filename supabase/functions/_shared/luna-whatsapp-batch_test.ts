@@ -1,22 +1,28 @@
 import { assertEquals } from "jsr:@std/assert@1";
 import {
   batchPartKindFromMime,
+  exceedsLunaMediaByteCap,
   FORWARDED_DEBOUNCE_SECONDS,
+  LUNA_MEDIA_SIGNED_URL_PLACEHOLDER,
   lunaBatchMediaRefEnabled,
   lunaBatchPartFileKind,
   lunaFlowReplyFromContent,
   lunaMediaRefFromFile,
   lunaWhatsAppBatchDebounceSecondsForMessage,
+  MAX_LUNA_MEDIA_BYTES,
   openbspIdByExternalIdFromRows,
   planSiblingOpenBatchUpdates,
   replyToOpenbspIdFromMap,
   resolveAbsorbMessageIds,
   shouldEnqueueLunaWhatsAppBatch,
+  shouldInlineLunaMediaBytes,
   SIBLING_CREATED_WITHIN_MS,
   SIBLING_TIMESTAMP_WINDOW_MS,
   sortMessageIdsForLunaOrder,
   sortMessageRowsForLunaOrder,
   storagePathFromInternalMediaUri,
+  unsupportedOversizedMediaPlaceholderText,
+  unsupportedVideoPlaceholderText,
 } from "./luna-whatsapp-batch.ts";
 import type { IncomingMessage, MessageRow } from "./supabase.ts";
 
@@ -507,7 +513,7 @@ Deno.test("storagePathFromInternalMediaUri: strips internal://media/ prefix", ()
   assertEquals(storagePathFromInternalMediaUri("https://cdn.example/x"), null);
 });
 
-Deno.test("lunaMediaRefFromFile: builds media pointer from content.file", () => {
+Deno.test("lunaMediaRefFromFile: stubs signedDownloadUrl as placeholder HTTPS URL", () => {
   const org = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
   const hash = "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-";
   const uri = `internal://media/organizations/${org}/attachments/${hash}`;
@@ -519,12 +525,16 @@ Deno.test("lunaMediaRefFromFile: builds media pointer from content.file", () => 
       name: "invoice.pdf",
     }),
     {
-      uri,
+      signedDownloadUrl: LUNA_MEDIA_SIGNED_URL_PLACEHOLDER,
       mimeType: "application/pdf",
       size: 8_388_608,
       sha256: hash,
       name: "invoice.pdf",
     },
+  );
+  assertEquals(
+    URL.canParse(LUNA_MEDIA_SIGNED_URL_PLACEHOLDER),
+    true,
   );
   assertEquals(
     lunaMediaRefFromFile({
@@ -536,7 +546,7 @@ Deno.test("lunaMediaRefFromFile: builds media pointer from content.file", () => 
   );
 });
 
-Deno.test("lunaBatchMediaRefEnabled: only when LUNA_BATCH_MEDIA_REF=1", () => {
+Deno.test("lunaBatchMediaRefEnabled: phase-2 omit-base64 when LUNA_BATCH_MEDIA_REF=1", () => {
   const prev = Deno.env.get("LUNA_BATCH_MEDIA_REF");
   try {
     Deno.env.delete("LUNA_BATCH_MEDIA_REF");
@@ -551,4 +561,36 @@ Deno.test("lunaBatchMediaRefEnabled: only when LUNA_BATCH_MEDIA_REF=1", () => {
     if (prev === undefined) Deno.env.delete("LUNA_BATCH_MEDIA_REF");
     else Deno.env.set("LUNA_BATCH_MEDIA_REF", prev);
   }
+});
+
+Deno.test("video must never be inlined as Luna media bytes", () => {
+  assertEquals(shouldInlineLunaMediaBytes("video"), false);
+  assertEquals(shouldInlineLunaMediaBytes("image"), true);
+  assertEquals(shouldInlineLunaMediaBytes("audio"), true);
+  assertEquals(shouldInlineLunaMediaBytes("document"), true);
+});
+
+Deno.test("unsupported video placeholder keeps caption when present", () => {
+  assertEquals(unsupportedVideoPlaceholderText(), "[unsupported video]");
+  assertEquals(
+    unsupportedVideoPlaceholderText("  look at this  "),
+    "[unsupported video] look at this",
+  );
+});
+
+Deno.test("Luna media byte cap is 5MB exclusive", () => {
+  assertEquals(MAX_LUNA_MEDIA_BYTES, 5 * 1024 * 1024);
+  assertEquals(exceedsLunaMediaByteCap(MAX_LUNA_MEDIA_BYTES), false);
+  assertEquals(exceedsLunaMediaByteCap(MAX_LUNA_MEDIA_BYTES + 1), true);
+});
+
+Deno.test("unsupported oversized media placeholder keeps caption", () => {
+  assertEquals(
+    unsupportedOversizedMediaPlaceholderText(),
+    "[unsupported: exceeded size more than 5MB]",
+  );
+  assertEquals(
+    unsupportedOversizedMediaPlaceholderText("  look at this  "),
+    "[unsupported: exceeded size more than 5MB] look at this",
+  );
 });

@@ -6,6 +6,11 @@ import { encodeBase64Url } from "jsr:@std/encoding/base64url";
 const SIGNED_URL_EXPIRATION_SECONDS = 3600; // 1 hour
 const BASE_URI = "internal://media";
 
+/** Strip `internal://media[/]` → storage object path (no leading slash). */
+export function storageObjectPathFromInternalUri(uri: string): string {
+  return uri.replace(BASE_URI, "").replace(/^\/+/, "");
+}
+
 export const MAX_STORAGE_UPLOAD_SIZE = parseInt(
   Deno.env.get("MAX_STORAGE_UPLOAD_SIZE") || String(50 * 1000 * 1000),
 ); // 50 MB default (Supabase free tier)
@@ -53,9 +58,8 @@ export async function uploadToStorage(
 }
 
 export async function downloadFromStorage(client: SupabaseClient, uri: string) {
-  // Extract the storage key from the internal uri format
-  // Example: "internal://media/org/contact/file" -> "org/contact/file"
-  const key = uri.replace(BASE_URI, "");
+  // Example: "internal://media/organizations/.../file" -> "organizations/.../file"
+  const key = storageObjectPathFromInternalUri(uri);
 
   const { data, error } = await client.storage.from("media").download(key);
 
@@ -66,12 +70,16 @@ export async function downloadFromStorage(client: SupabaseClient, uri: string) {
   return data;
 }
 
-export async function createSignedUrl(client: SupabaseClient, uri: string) {
-  const key = uri.replace(BASE_URI, "");
+export async function createSignedUrl(
+  client: SupabaseClient,
+  uri: string,
+  expiresInSeconds: number = SIGNED_URL_EXPIRATION_SECONDS,
+) {
+  const key = storageObjectPathFromInternalUri(uri);
 
   const { data, error } = await client.storage
     .from("media")
-    .createSignedUrl(key, SIGNED_URL_EXPIRATION_SECONDS);
+    .createSignedUrl(key, expiresInSeconds);
 
   if (error) {
     throw error;
