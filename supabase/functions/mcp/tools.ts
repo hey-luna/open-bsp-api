@@ -437,7 +437,7 @@ export async function sendMessage(params: SendMessageParams) {
     allowedAccounts,
   });
 
-  // Enforce 24h service window for session messages (text, flow, buttons).
+  // Enforce 24h service window for session messages (text, flow, buttons, carousel).
   if (params.content.kind !== "template") {
     const { data: lastMsg } = await params.supabase
       .from("messages")
@@ -470,11 +470,12 @@ export async function sendMessage(params: SendMessageParams) {
     (params.content.type === "data" &&
       (params.content.kind === "template" ||
         params.content.kind === "flow" ||
-        params.content.kind === "buttons"));
+        params.content.kind === "buttons" ||
+        params.content.kind === "carousel"));
 
   if (!isSupported) {
     throw new Error(
-      "Unsupported content type. Only 'text', 'template', 'flow', and 'buttons' are supported.",
+      "Unsupported content type. Only 'text', 'template', 'flow', 'buttons', and 'carousel' are supported.",
     );
   }
 

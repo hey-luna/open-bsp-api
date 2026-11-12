@@ -229,6 +229,35 @@ export type ButtonsMessageData = {
 
 type ButtonsPart = DataPart<"buttons", ButtonsMessageData>;
 
+/**
+ * Card header for interactive media carousels. Meta allows image or video only
+ * (no text/document headers on cards).
+ * https://developers.facebook.com/documentation/business-messaging/whatsapp/messages/interactive-media-carousel-messages/
+ */
+export type CarouselCardHeader =
+  | { type: "image"; image: ButtonsMediaRef }
+  | { type: "video"; video: ButtonsMediaRef };
+
+export type CarouselCard = {
+  header: CarouselCardHeader;
+  /** Optional card body. Max 160 chars / 2 line breaks (Meta). */
+  body?: string;
+  /**
+   * Per-card buttons. All cards must use the same button kind and count:
+   * either one `website` button, or 1–3 `reply` buttons.
+   */
+  buttons: ReplyButton[];
+};
+
+/** Session interactive media carousel (`interactive.type: "carousel"`). */
+export type CarouselMessageData = {
+  body: string;
+  /** 2–10 cards (Meta). */
+  cards: CarouselCard[];
+};
+
+type CarouselPart = DataPart<"carousel", CarouselMessageData>;
+
 type FlowReplyPart = DataPart<"flow-reply", NfmReplyData>;
 
 type TemplatePart = DataPart<"template", Template>;
@@ -338,4 +367,5 @@ export type OutgoingMessage =
     | TemplatePart
     | FlowPart
     | ButtonsPart
+    | CarouselPart
   );

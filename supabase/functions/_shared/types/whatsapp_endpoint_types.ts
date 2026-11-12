@@ -133,6 +133,44 @@ export type OutgoingCtaUrl = {
   };
 };
 
+/** Card header for interactive media carousels (image/video only). */
+export type OutgoingCarouselCardHeader =
+  | { type: "image"; image: OutgoingInteractiveMediaRef }
+  | { type: "video"; video: OutgoingInteractiveMediaRef };
+
+export type OutgoingCarouselCard = {
+  card_index: number;
+  /** Meta examples always set card type to `cta_url` for both URL and QR cards. */
+  type: "cta_url";
+  header: OutgoingCarouselCardHeader;
+  body?: { text: string };
+  action:
+    | {
+      name: "cta_url";
+      parameters: {
+        display_text: string;
+        url: string;
+      };
+    }
+    | {
+      buttons: {
+        type: "quick_reply";
+        quick_reply: { id: string; title: string };
+      }[];
+    };
+};
+
+export type OutgoingCarousel = {
+  type: "interactive";
+  interactive: {
+    type: "carousel";
+    body: { text: string };
+    action: {
+      cards: OutgoingCarouselCard[];
+    };
+  };
+};
+
 //===================================
 // Endpoint message, as sent to the WhatsApp endpoint
 //===================================
@@ -162,6 +200,7 @@ export type EndpointMessage =
     | OutgoingFlow
     | OutgoingReplyButtons
     | OutgoingCtaUrl
+    | OutgoingCarousel
   );
 
 export type EndpointMessageResponse = {
