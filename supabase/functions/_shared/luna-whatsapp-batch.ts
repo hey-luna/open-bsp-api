@@ -5,6 +5,7 @@ import * as log from "./logger.ts";
 import { downloadFromStorage } from "./media.ts";
 import type {
   ButtonsMessageData,
+  CarouselMessageData,
   Database,
   FlowMessageData,
   IncomingMessage,
@@ -788,6 +789,15 @@ function lunaOutgoingButtonsText(data: ButtonsMessageData): string {
   return body ? `${body}\n${suffix}` : suffix;
 }
 
+function lunaOutgoingCarouselText(data: CarouselMessageData): string {
+  const body = data.body?.trim() ?? "";
+  const cardCount = data.cards?.length ?? 0;
+  const suffix = cardCount > 0
+    ? `[Carousel: ${cardCount} card${cardCount === 1 ? "" : "s"}]`
+    : "[Carousel]";
+  return body ? `${body}\n${suffix}` : suffix;
+}
+
 function lunaOutgoingFlowText(data: FlowMessageData): string {
   const body = data.body?.trim() ?? "";
   const cta = data.flow_cta?.trim() ?? "";
@@ -1004,6 +1014,14 @@ async function messageToLunaRecent(
       ...base,
       kind: "text",
       text: lunaOutgoingButtonsText(content.data),
+    };
+  }
+
+  if (content.type === "data" && content.kind === "carousel") {
+    return {
+      ...base,
+      kind: "text",
+      text: lunaOutgoingCarouselText(content.data),
     };
   }
 

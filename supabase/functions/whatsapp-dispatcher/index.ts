@@ -15,6 +15,7 @@ import { commitDispatchedMessage } from "../_shared/dispatch.ts";
 import { Json } from "../_shared/db_types.ts";
 import { markdownToWhatsApp } from "../_shared/markdown.ts";
 import { buildOutgoingButtonsMessage } from "../_shared/whatsapp-interactive-buttons.ts";
+import { buildOutgoingCarouselMessage } from "../_shared/whatsapp-interactive-carousel.ts";
 
 const API_VERSION = "v24.0";
 const DEFAULT_ACCESS_TOKEN = Deno.env.get("META_SYSTEM_USER_ACCESS_TOKEN") ||
@@ -408,6 +409,12 @@ function outgoingMessageToEndpointMessage({
       return {
         ...baseMessage,
         ...buildOutgoingButtonsMessage(content.data),
+      };
+    }
+    case "carousel": {
+      return {
+        ...baseMessage,
+        ...buildOutgoingCarouselMessage(content.data),
       };
     }
     default: {
