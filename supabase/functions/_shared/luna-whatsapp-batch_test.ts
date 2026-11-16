@@ -2,6 +2,7 @@ import { assertEquals } from "jsr:@std/assert@1";
 import {
   batchPartKindFromMime,
   exceedsLunaMediaByteCap,
+  FLUSH_RETRY_DELAY_MS,
   FORWARDED_DEBOUNCE_SECONDS,
   LUNA_MEDIA_SIGNED_URL_PLACEHOLDER,
   lunaBatchMediaRefEnabled,
@@ -91,6 +92,12 @@ function incomingFlowReply(opts?: {
     },
   } as unknown as MessageRow;
 }
+
+Deno.test("flush retry backoff is short (not a 30s hold)", () => {
+  // Statement-timeout first flushes previously waited 30s before retry.
+  assertEquals(FLUSH_RETRY_DELAY_MS, 5_000);
+  assertEquals(FLUSH_RETRY_DELAY_MS < 30_000, true);
+});
 
 Deno.test("debounce: normal text flushes immediately", () => {
   assertEquals(lunaWhatsAppBatchDebounceSecondsForMessage(incomingText({})), 0);
