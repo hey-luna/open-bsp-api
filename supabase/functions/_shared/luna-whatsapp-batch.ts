@@ -190,6 +190,13 @@ export const SIBLING_CREATED_WITHIN_MS = 30_000;
 /** Look back this far for `sent`/`flushing` batches when skipping delivered ids. */
 export const RECENTLY_SENT_LOOKBACK_MS = 60_000;
 const MAX_FLUSH_ATTEMPTS = 5;
+/**
+ * Backoff after a failed flush (DB timeout, Luna 5xx, etc.) before the next
+ * open-batch attempt. Kept well under the old 30s hold — first-flush statement
+ * timeouts should be rare after messages_org_contact_service_timestamp_idx,
+ * and a shorter retry cuts user-visible first-touch lag when one still lands.
+ */
+export const FLUSH_RETRY_DELAY_MS = 5_000;
 const STALE_FLUSHING_MS = 5 * 60 * 1000;
 const SUPPORTED_FILE_KINDS = new Set(["audio", "image", "document", "video"]);
 
@@ -1852,7 +1859,7 @@ export async function flushLunaWhatsAppBatch(
             "Row"
           ]["luna_response"],
         error_message: errorMessage,
-        flush_at: new Date(Date.now() + 30_000).toISOString(),
+        flush_at: new Date(Date.now() + FLUSH_RETRY_DELAY_MS).toISOString(),
       });
     }
 
@@ -1867,7 +1874,7 @@ export async function flushLunaWhatsAppBatch(
     await releaseFlushingBatchToOpenOrMerge(client, claimed, {
       attempt_count: claimed.attempt_count + 1,
       error_message: message,
-      flush_at: new Date(Date.now() + 30_000).toISOString(),
+      flush_at: new Date(Date.now() + FLUSH_RETRY_DELAY_MS).toISOString(),
     });
     log.error("Luna WhatsApp batch flush error", { batchId, error: message });
     return "skipped";

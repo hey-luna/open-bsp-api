@@ -95,6 +95,15 @@ create index messages_org_direction_timestamp_idx
 on public.messages
 using btree (organization_id, direction, timestamp desc);
 
+-- Luna WhatsApp batch flush loads recent thread context by contact_address
+-- (not conversation_id). Without this, PostgREST falls back to
+-- messages_timestamp_idx and filters ~all org rows — ~5s+ on cold/new
+-- contacts, exceeding authenticator's 8s statement_timeout and forcing a
+-- 30s flush retry.
+create index messages_org_contact_service_timestamp_idx
+on public.messages
+using btree (organization_id, contact_address, service, timestamp desc);
+
 create trigger handle_new_message
 before insert
 on public.messages
