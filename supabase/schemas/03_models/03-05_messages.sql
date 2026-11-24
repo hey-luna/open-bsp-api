@@ -95,6 +95,12 @@ create index messages_org_direction_timestamp_idx
 on public.messages
 using btree (organization_id, direction, timestamp desc);
 
+-- Supports Luna WhatsApp batch flush recent-history lookup:
+-- WHERE organization_id + contact_address + service ORDER BY timestamp DESC.
+create index messages_org_contact_service_timestamp_idx
+on public.messages
+using btree (organization_id, contact_address, service, timestamp desc);
+
 create trigger handle_new_message
 before insert
 on public.messages
